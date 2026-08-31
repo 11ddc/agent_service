@@ -7,27 +7,32 @@
 
 对外入口：classify(query) -> IntentResult
 """
+
 import json
 import math
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from intent.examples import ACK_PHRASES, GREETING_PREFIXES, INTENT_EXAMPLES, RULE_PATTERNS
-from intent.schemas import IntentName, IntentOutput, IntentResult, IntentSlots
+from intent.examples import (
+    ACK_PHRASES,
+    GREETING_PREFIXES,
+    INTENT_EXAMPLES,
+    RULE_PATTERNS,
+)
+from intent.schemas import IntentName, IntentOutput, IntentResult
 
 load_dotenv()
 
 # ── 可调阈值（B/C 级）────────────────────────────────────
-EMBED_HIGH_THRESHOLD = 0.60    # embedding 最高分超过它且拉开差距 → 直接判定
-EMBED_LOW_THRESHOLD = 0.45     # 最高分低于它 → 视为 out_of_scope（省一次 LLM 调用）
-EMBED_MARGIN = 0.05            # 与第二名的分数差下限
+EMBED_HIGH_THRESHOLD = 0.60  # embedding 最高分超过它且拉开差距 → 直接判定
+EMBED_LOW_THRESHOLD = 0.45  # 最高分低于它 → 视为 out_of_scope（省一次 LLM 调用）
+EMBED_MARGIN = 0.05  # 与第二名的分数差下限
 LLM_CONFIDENCE_THRESHOLD = 0.60  # LLM 仲裁置信度下限，低于它 → ambiguous
 
 # 示例向量缓存：改了 intent/examples.py 里的 INTENT_EXAMPLES 后请 +1
@@ -36,28 +41,30 @@ CACHE_FILE = Path(__file__).resolve().parent / "example_embeddings.json"
 
 # ── 规则编译 ─────────────────────────────────────────────
 _RULE_RE = [(intent, re.compile(pattern)) for intent, pattern in RULE_PATTERNS]
-_GREETING_PREFIX_RE = re.compile(r"^(?:" + "|".join(GREETING_PREFIXES) + r")[,，。!！\s]*", re.IGNORECASE)
+_GREETING_PREFIX_RE = re.compile(
+    r"^(?:" + "|".join(GREETING_PREFIXES) + r")[,，。!！\s]*", re.IGNORECASE
+)
 _ACK_RE = re.compile(r"^(?:" + "|".join(ACK_PHRASES) + r")+$", re.IGNORECASE)
 
 
 def _strip_greeting_prefix(query: str) -> str:
-    #替换掉招呼词 你好之类
+    # 替换掉招呼词 你好之类
     return _GREETING_PREFIX_RE.sub("", query, count=1).strip()
 
 
-def rule_classify(query: str) -> Tuple[Optional[IntentName], str]:
+def rule_classify(query: str) -> tuple[IntentName | None, str]:
     """A 级：规则匹配。返回 (命中的意图 or None, 用于继续分类的有效 query)。"""
     q = query.strip()
 
     # 转人工/投诉（最高优先级）
     for intent, regex in _RULE_RE:
-        #拿问题去匹配某个意图的值
+        # 拿问题去匹配某个意图的值
         if regex.search(q):
             return intent, q
 
     # 剥寒暄前缀，看剩余部分
     stripped = _strip_greeting_prefix(q)
-    #从头到尾匹配包括标点符号fullmatch。（这里用来替换结束语，谢谢之类）
+    # 从头到尾匹配包括标点符号fullmatch。（这里用来替换结束语，谢谢之类）
     if not stripped or _ACK_RE.fullmatch(stripped):
         # 只剩寒暄/应答 → chitchat
         return IntentName.CHITCHAT, q
@@ -73,44 +80,43 @@ class EmbeddingClassifier:
             dashscope_api_key=os.getenv("QIANWEN_API_KEY"),
         )
         # {IntentName: List[向量]}
-        self._vectors: Dict[IntentName, List[List[float]]] = {}
+        self._vectors: dict[IntentName, list[list[float]]] = {}
         self._load_or_build()
 
     def _load_or_build(self):
-        #向量化的意图例子 用来和问题匹配取相似度
+        # 向量化的意图例子 用来和问题匹配取相似度
         examples = INTENT_EXAMPLES
-        #拿到每一个意图的例子
-        all_examples: List[str] = [e for exs in examples.values() for e in exs]
+        # 拿到每一个意图的例子
+        all_examples: list[str] = [e for exs in examples.values() for e in exs]
         count = len(all_examples)
 
         # 命中缓存直接复用，避免每次重启都请求 embedding API
         if CACHE_FILE.exists():
             try:
-                #通过旧缓存判断是否需要更新缓存
+                # 通过旧缓存判断是否需要更新缓存
                 data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
                 if data.get("version") == CACHE_VERSION and data.get("count") == count:
-                                            
                     self._vectors = {
                         IntentName(k): [list(v) for v in vecs]
                         for k, vecs in data["vectors"].items()
                     }
                     print(f"意图示例向量：加载缓存（{count} 条）")
                     return
-                
+
             except Exception as e:
                 print(f"意图示例向量缓存读取失败，将重新生成: {e}")
 
         # print(f"意图示例向量：请求 embedding API（{count} 条示例）...")
 
-        #计算需要写入的向量
+        # 计算需要写入的向量
         vectors = self._embeddings.embed_documents(all_examples)
 
-        grouped: Dict[str, List[List[float]]] = {}
+        grouped: dict[str, list[list[float]]] = {}
         idx = 0
         for intent, exs in examples.items():
-            grouped[intent.value] = vectors[idx: idx + len(exs)]
+            grouped[intent.value] = vectors[idx : idx + len(exs)]
             idx += len(exs)
-        #写入文件
+        # 写入文件
         CACHE_FILE.write_text(
             json.dumps(
                 {"version": CACHE_VERSION, "count": count, "vectors": grouped},
@@ -120,40 +126,51 @@ class EmbeddingClassifier:
         )
         self._vectors = {IntentName(k): v for k, v in grouped.items()}
 
+        # 返回一个元组
 
-        #返回一个元组
-    def classify(self, query: str) -> Tuple[Optional[IntentName], float, Dict[str, float]]:
+    def classify(self, query: str) -> tuple[IntentName | None, float, dict[str, float]]:
         """
         返回 (意图 or None, 最高分, 各意图最高相似度)。
         None 表示歧义 → 交给 C 级 LLM 仲裁。
         """
-        #将问题向量化
+        # 将问题向量化
         q_vec = self._embeddings.embed_query(query)
-        #规定这个字典必须是键IntentName值float
-        scores: Dict[IntentName, float] = {}
+        # 规定这个字典必须是键IntentName值float
+        scores: dict[IntentName, float] = {}
 
         for intent, vecs in self._vectors.items():
-            #计算用户提问和向量化分类模型中的相似度 取最大并保存当前意图
-            #这里是取每一个意图中相似度最高的
+            # 计算用户提问和向量化分类模型中的相似度 取最大并保存当前意图
+            # 这里是取每一个意图中相似度最高的
             scores[intent] = max(self._cosine(q_vec, v) for v in vecs)
 
         # print(f"embbding各意图相似度:",scores)
-    
-        #对sorted从小到大排序 这里取了负数-x[1]
+
+        # 对sorted从小到大排序 这里取了负数-x[1]
         ranked = sorted(scores.items(), key=lambda x: -x[1])
         top_intent, top_score = ranked[0]
         second_score = ranked[1][1]
         # print(f"最高相似度和意图：",top_intent,top_score)
 
-        if top_score >= EMBED_HIGH_THRESHOLD and (top_score - second_score) >= EMBED_MARGIN:
-            return top_intent, top_score, {k.value: round(v, 4) for k, v in scores.items()}
+        if (
+            top_score >= EMBED_HIGH_THRESHOLD
+            and (top_score - second_score) >= EMBED_MARGIN
+        ):
+            return (
+                top_intent,
+                top_score,
+                {k.value: round(v, 4) for k, v in scores.items()},
+            )
         if top_score < EMBED_LOW_THRESHOLD:
-            return IntentName.OUT_OF_SCOPE, top_score, {k.value: round(v, 4) for k, v in scores.items()}
+            return (
+                IntentName.OUT_OF_SCOPE,
+                top_score,
+                {k.value: round(v, 4) for k, v in scores.items()},
+            )
         return None, top_score, {k.value: round(v, 4) for k, v in scores.items()}
 
-    #计算余弦相似度 越接近1越相似
+    # 计算余弦相似度 越接近1越相似
     @staticmethod
-    def _cosine(a: List[float], b: List[float]) -> float:
+    def _cosine(a: list[float], b: list[float]) -> float:
         dot = sum(x * y for x, y in zip(a, b))
         na = math.sqrt(sum(x * x for x in a))
         nb = math.sqrt(sum(y * y for y in b))
@@ -187,7 +204,7 @@ class LLMClassifier:
             model="deepseek-chat",
             base_url="https://api.deepseek.com/v1",
             api_key=os.getenv("DEEPSEEK_API_KEY"),
-            temperature=0,   # 分类任务要确定性
+            temperature=0,  # 分类任务要确定性
         )
         self._prompt = ChatPromptTemplate.from_messages(
             [
@@ -199,7 +216,9 @@ class LLMClassifier:
     def classify(self, query: str) -> IntentOutput:
         # 方式一：json mode（DeepSeek 支持 response_format json_object）
         try:
-            chain = self._prompt | self._llm.with_structured_output(IntentOutput, method="json_mode")
+            chain = self._prompt | self._llm.with_structured_output(
+                IntentOutput, method="json_mode"
+            )
 
             # print(f"llm：", chain.invoke({"query": query}))
             return chain.invoke({"query": query})
@@ -219,7 +238,9 @@ class IntentClassifier:
     def classify(self, query: str) -> IntentResult:
         query = (query or "").strip()
         if not query or not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", query):
-            return IntentResult(intent=IntentName.AMBIGUOUS, confidence=0, method="rule")
+            return IntentResult(
+                intent=IntentName.AMBIGUOUS, confidence=0, method="rule"
+            )
 
         # rule_classify规则匹配
         intent, effective = rule_classify(query)
@@ -232,34 +253,44 @@ class IntentClassifier:
         # print(f"embbding意图：",intent)
 
         if intent is not None:
-            return IntentResult(intent=intent, confidence=score, method="embedding", scores=scores)
+            return IntentResult(
+                intent=intent, confidence=score, method="embedding", scores=scores
+            )
 
         # LLM 仲裁（此时 embedding 结果歧义）
         try:
             out = self._llm.classify(effective or query)
             # print(f"llm输出:",out)
 
-            #llm自己的置信度
+            # llm自己的置信度
             if out.confidence >= LLM_CONFIDENCE_THRESHOLD:
                 return IntentResult(
-                    intent=out.intent, confidence=out.confidence,
-                    method="llm", slots=out.slots, scores=scores,
+                    intent=out.intent,
+                    confidence=out.confidence,
+                    method="llm",
+                    slots=out.slots,
+                    scores=scores,
                 )
             # LLM 自己也拿不准 → ambiguous（上层降级走默认 RAG）
             return IntentResult(
-                intent=IntentName.AMBIGUOUS, confidence=out.confidence,
-                method="llm", slots=out.slots, scores=scores,
+                intent=IntentName.AMBIGUOUS,
+                confidence=out.confidence,
+                method="llm",
+                slots=out.slots,
+                scores=scores,
             )
         except Exception as e:
             print(f"LLM 意图仲裁失败，降级为 ambiguous: {e}")
             return IntentResult(
-                intent=IntentName.AMBIGUOUS, confidence=0,
-                method="llm", scores=scores,
+                intent=IntentName.AMBIGUOUS,
+                confidence=0,
+                method="llm",
+                scores=scores,
             )
 
 
 # ── 模块级单例 + 对外入口 ────────────────────────────────
-_classifier: Optional[IntentClassifier] = None
+_classifier: IntentClassifier | None = None
 
 
 def get_classifier() -> IntentClassifier:

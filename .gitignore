@@ -5,6 +5,7 @@ env/
 chroma_db/
 images
 knowledge_base
+Reank_models
 
 __pycache__/
 *.py[cod]

@@ -9,10 +9,10 @@
 兼容说明：api/chat.py 里是 `from intent.problemdecomposition import divide`，
 所以模块级保留 divide() 函数；ProblemdeComposition 类作为可选封装。
 """
+
 import json
 import os
 import re
-from typing import List
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -70,23 +70,25 @@ def divide(query: str) -> bool:
     return False
 
 
-def decompose(query: str) -> List[str]:
+def decompose(query: str) -> list[str]:
     """当 divide() 为 True 时调用：LLM 拆分子问题；失败降级为规则拆分。"""
     text = ""
     try:
-        print(f"问题拆分模型调用")
+        print("问题拆分模型调用")
         response = client.responses.create(
             model=_MODEL,
             input=[
                 {"role": "system", "content": _DECOMPOSE_PROMPT},
-                {"role": "user", "content": query}, 
+                {"role": "user", "content": query},
             ],
             extra_body={"enable_thinking": False},  # 关闭思考模式，拆分要快
         )
         # 取出文本并去掉 ```json 包裹（LLM 偶尔会带）
         text = response.output_text if response else ""
-        #替换字符 忽略大小写
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE)
+        # 替换字符 忽略大小写
+        cleaned = re.sub(
+            r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE
+        )
         questions = json.loads(cleaned)
         # 返回列表就好
         if isinstance(questions, list):
@@ -105,14 +107,13 @@ def decompose(query: str) -> List[str]:
                 return result
         except Exception:
             pass
-        #拆分失败先统一当单问题走
+        # 拆分失败先统一当单问题走
     return False
 
 
-def split_questions(query: str) -> List[str]:
+def split_questions(query: str) -> list[str]:
     """对外入口：多问题 → LLM 拆分；单问题 → 原样返回。"""
     query = (query or "").strip()
     if divide(query):
         return decompose(query)
     return False
-
