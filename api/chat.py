@@ -44,15 +44,17 @@ async def servercustomer(query: str, session_id: str) -> str | None:
 
 def _answer_by_agent(question: str, session_id: str) -> str:
     """让 Agent 单独回答一个问题（图异常兜底 / 多问题全空时降级）。"""
-    agent_result = agent.invoke(
-        {"messages": [{"role": "user", "content": question}]},
-        config={"configurable": {"thread_id": session_id}},
-    )
-    return agent_result["messages"][-1].content
+    # agent_result = agent.invoke(
+    #     {"messages": [{"role": "user", "content": question}]},
+    #     config={"configurable": {"thread_id": session_id}},
+    # )
+    # return agent_result["messages"][-1].content
+    return "兜底agent回答: "
 
 
 @router.post("/chat")
 async def chat(request: ChatRequest):
+    print("✅ 请求已进入接口！")
     """同步聊天 — 编排图执行：拆分→意图路由→(短路/RAG/Agent)→汇总"""
     # 转人工检测：先于一切执行，但只附加提示、不短路主流程；
     # Redis 异常时静默降级，聊天照常（不影响当前聊天接口）
@@ -85,8 +87,11 @@ async def chat(request: ChatRequest):
             graph.invoke,
             {"question": request.question, "session_id": request.session_id},
         )
+
         answer = result.get("answer") or ""
         meta = result.get("meta") or {}
+
+        print(f"编排图执行完成，answer: {answer}, meta: {meta}")
     except Exception as e:
         print(f"编排图执行失败，降级直连 Agent: {e}")
         answer = _answer_by_agent(request.question, request.session_id)
@@ -94,6 +99,7 @@ async def chat(request: ChatRequest):
 
     # 与旧逻辑对齐：多问题全部检索为空时，用原问题整体兜底给 Agent
     if not answer:
+        print("编排图执行结果为空，降级直连 Agent")
         answer = _answer_by_agent(request.question, request.session_id)
         meta = {"intent": "unknown", "method": "fallback"}
 

@@ -1,15 +1,23 @@
-from typing import TypedDict
+import json
+from typing import Annotated, Literal, TypedDict
 
+from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 
 from agent.langchina import agent
 from intent.classifier import classify
 from intent.problemdecomposition import split_questions
 from intent.schemas import IntentName, IntentResult
+from mcp_client import call_mcp_tool
 from query_rewrite.history import get_history
 from query_rewrite.rewriter import rewrite_query
 from rag.generatellm import RAGGenerator
 from rag.rag import KnowledgeBaseError, get_status, reordering, retrieve_sync
+
+# ── MCP 接入点②（新增）：外部 MCP 工具桥，见 tools_agent/mcp_client.py
+# from tools_agent import mcp_client
+from tools_agent.tool_llm import add, call_zhipu_chat, searchOrder
 
 # ── 非知识库意图的短路回复话术 ────────────────────────────
 SHORT_CIRCUIT_REPLIES = {
@@ -29,6 +37,7 @@ class AgentState(TypedDict):
     contexts: str | None  # 检索得到的答案
     answer: str | None  # 响应
     meta: dict | None  # 元数组数据
+    messages: Annotated[list, add_messages]
 
 
 Generator = RAGGenerator()
@@ -43,6 +52,7 @@ def rewrite_node(state: AgentState) -> dict:
         return {"question": question}
     # 返回会话历史
     history = get_history(session_id)
+    print(f"会话历史: {history}")
 
     return {"question": rewrite_query(question, history)}
 
@@ -50,11 +60,13 @@ def rewrite_node(state: AgentState) -> dict:
 def splitter_node(state: AgentState) -> dict:
     """问题拆分节点：多问题 → 子问题列表；单问题 → 空列表。"""
     querys = split_questions(state["question"])
+    print(f"问题拆分结果: {querys}")
     return {"sub_questions": list(querys) if querys else []}
 
 
 def route_after_split(state: AgentState) -> str:
     """拆分后判断：多问题 → multi_loop；单问题 → 单问题子图。question_flow"""
+    print(f"最终问题：{state['question']}，拆分结果：{state.get('sub_questions')}")
     return (
         "multi_loop" if len(state.get("sub_questions") or []) > 1 else "question_flow"
     )
@@ -64,6 +76,7 @@ def intent_router_node(state: AgentState) -> dict:
     """意图识别节点：三级漏斗（规则→Embedding→LLM）；失败置 None 交给兜底。"""
     try:
         result = classify(state["question"])
+        print(f"三级漏斗进来的意图识别：{result.intent}")
     except Exception as e:
         print(f"意图识别失败：{e}")
         result = None
@@ -88,10 +101,73 @@ def route_by_intent(state: AgentState) -> str:
     return "short_circuit"  # chitchat / handoff / out_of_scope / status
 
 
-# 工具调用意图
+# 工具调用
 def tool_call_node(state: AgentState) -> dict:
+    last_msg = state["messages"][-1]
 
-    return True
+    # 打印工具调用信息（现在 tc 是字典，直接打印即可）
+    print(f"tool_call_node——msg: {last_msg}")
+
+    tool_messages = []
+    # 如果 tool_calls 为 None 或空列表，直接返回空消息列表
+    if not last_msg.tool_calls:
+        return {"messages": []}
+
+    for tc in last_msg.tool_calls:
+        # 现在 tc 是 LangChain 格式的字典：{"name": ..., "args": {...}, "id": ...}
+        tool_name = tc["name"]  # 或者 tc.get("name")
+        tool_args = tc["args"]  # 已经是字典，不需要 json.loads
+        tool_id = tc["id"]
+
+        print(f"调用工具：{tool_name}，参数：{tool_args}")  # 清晰打印
+
+        # ── MCP 接入点②（新增）：外部 MCP 工具（mcp__<server>__<tool>）由 mcp_client 执行
+        if tool_name.startswith("mcp__"):
+            # result = mcp_client.call_mcp_tool_sync(tool_name, tool_args)
+            result = call_mcp_tool({"tool_name": tool_name, "tool_args": tool_args})
+            tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
+
+        elif tool_name == "searchOrder":
+            # 从参数中提取 query（session_id 由系统注入）
+            query_arg = tool_args.get("query")
+            result = searchOrder.invoke(
+                {"query": query_arg, "session_id": state.get("session_id")}
+            )
+            tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
+
+        elif tool_name == "add":
+            query_arg = tool_args.get("query")
+            result = add.invoke(
+                {"query": query_arg, "session_id": state.get("session_id")}
+            )
+            tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
+
+        else:
+            # 处理未知工具（可忽略或报错）
+            print(f"未知工具：{tool_name}，忽略")
+
+    return {"messages": tool_messages}
+
+
+def convert_zhipu_tool_calls(zhipu_tool_calls):
+    """将智谱的工具调用转换为 LangChain ToolCall 格式"""
+    if not zhipu_tool_calls:
+        return []
+
+    langchain_tool_calls = []
+    for tc in zhipu_tool_calls:
+        # 解析 arguments 字符串为字典
+
+        args = json.loads(tc.function.arguments)
+        langchain_tool_calls.append(
+            ToolCall(name=tc.function.name, args=args, id=tc.id)
+        )
+    return langchain_tool_calls
+
+
+# 入口函数 修格式使用
+def entry_node(state: AgentState) -> dict:
+    return {"messages": [HumanMessage(content=state["question"])]}
 
 
 # llm判断什么时候调用工具，调用什么工具
@@ -100,14 +176,46 @@ def llm_call_node(state: AgentState) -> dict:
     # 从身份推导（最好）：用户是登录态，user_id 在 config 里——你可以直接查他的订单列表，根本不该让用户报订单号
     # 从对话历史里拿：用户三轮前说过的订单号，LLM 能从 messages 里捡回来
     # 问用户（兜底）：实在没有再问，而且要告诉用户去哪找（“在 我的-订单 页面可查看”）
+    # history_msg = state["messages"]
+    # user_msg = {"role": "user", "content": state["question"]}
+    # full_messages = history_msg + [user_msg]
+    try:
+        res = call_zhipu_chat(state["messages"])
+        print("调用智谱chat模型完成，", res)
+        zhipi_msg = res.choices[0].message
 
-    return True
+        print("toolcalls_zhipu", zhipi_msg)
+        new_ai_msg = AIMessage(
+            content=zhipi_msg.content or "",
+            # 将智谱的工具调用转换为 LangChain ToolCall 格式
+            tool_calls=convert_zhipu_tool_calls(zhipi_msg.tool_calls),
+        )
+        print("llm_call_node返回的AIMessage:", new_ai_msg)
+
+        return {"messages": new_ai_msg}
+
+    except Exception as e:
+        print(f"调用智谱chat模型失败: {e}")
 
 
-# llm判断是否需要调用
-def tool_continue(state: AgentState) -> dict:
+# llm判断是否需要调用工具
+def tool_continue(state: AgentState) -> Literal["tool_call", END]:
 
-    return True
+    last_msg = state["messages"][-1]
+    print("tool_continue检查是否需要调用工具，last_msg:", last_msg)
+    if last_msg.tool_calls:
+        return "tool_call"
+    else:
+        return "data_node"
+
+
+# 用来和单问题图之间对接数据 和mager一样
+def data_node(state: AgentState) -> dict:
+    last_msg = state["messages"][-1]
+    answer = last_msg.content if hasattr(last_msg, "content") else ""
+    print(f"data_node——answer: {answer}")
+    # 返回包含 answer 的字典，更新状态
+    return {"answer": answer}
 
 
 # 3 个字典回复 + 2 个特判分支"覆盖了 5 个意图值
@@ -179,6 +287,8 @@ def merge_node(state: AgentState) -> dict:
         slots = result.slots
         if slots is not None and (slots.source or slots.keyword or slots.time_range):
             meta["slots"] = slots.model_dump()
+
+    print("主图的anwer：", state.get("answer"), "meta:", meta)
     return {"answer": state.get("answer") or "", "meta": meta}
 
 
@@ -186,7 +296,7 @@ def multi_loop_node(state: AgentState) -> dict:
     """多问题节点（薄图版）：顺序调用单问题子图，每个子问题走完整流程，最后合并。"""
     parts, last_meta = [], None
     for q in state["sub_questions"]:
-        print("多问题：", q)
+        print("多问题循环：", q)
         # 循环走单问题子图
         r = question_graph.invoke({"question": q, "session_id": state["session_id"]})
         parts.append(r.get("answer") or "")
@@ -199,11 +309,15 @@ def build_tool_agent_graph():
     g = StateGraph(AgentState)
     g.add_node("tool_call", tool_call_node)
     g.add_node("llm_call", llm_call_node)
+    g.add_node("entry_node", entry_node)
+    g.add_node("data_node", data_node)
 
-    g.add_edge(START, "llm_call")
-    g.add_conditional_edges("llm_call", tool_continue, ["tool_call", END])
+    g.add_edge(START, "entry_node")
+    g.add_edge("entry_node", "llm_call")
+    g.add_conditional_edges("llm_call", tool_continue, ["tool_call", "data_node"])
     # 从tool->llm
     g.add_edge("tool_call", "llm_call")
+    g.add_edge("data_node", END)
     return g.compile()
 
 
@@ -260,6 +374,7 @@ def build_main_graph():
     )
     g.add_edge("question_flow", END)
     g.add_edge("multi_loop", END)
+    print("主图")
     return g.compile()
 
 

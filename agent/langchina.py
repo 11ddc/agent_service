@@ -1,10 +1,11 @@
-from langchain.agents import create_agent
-from langgraph.checkpoint.memory import InMemorySaver
-from langchain_openai import ChatOpenAI
-from langchain.tools import tool
-from dataclasses import dataclass, field
 import os
+from dataclasses import dataclass, field
+
 from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
 
 load_dotenv()
 
@@ -13,9 +14,10 @@ model = ChatOpenAI(
     model="deepseek-chat",
     base_url="https://api.deepseek.com/v1",
     api_key=os.getenv("DEEPSEEK_API_KEY"),
-    #概率分布 越高越容易胡言乱语
-    temperature=0.7
+    # 概率分布 越高越容易胡言乱语
+    temperature=0.7,
 )
+
 
 # ── Agent 上下文 ─────────────────────────────────────────
 @dataclass
@@ -23,6 +25,7 @@ class Context:
     question: str
     user_id: str = "default_user"
     messages: list = field(default_factory=list)
+
 
 # ── 定义 RAG 工具 ────────────────────────────────────────
 @tool
@@ -42,6 +45,7 @@ def search_knowledge_base(query: str) -> str:
         知识库中检索到的相关文档片段，或提示未找到。
     """
     from rag.rag import retrieve
+
     return retrieve(query)
 
 
@@ -53,6 +57,7 @@ def get_knowledge_base_status() -> str:
     当你需要了解知识库有什么内容可用时调用此工具。
     """
     from rag.rag import get_status
+
     status = get_status()
     if not status["initialized"]:
         return "知识库尚未初始化。"
@@ -70,5 +75,5 @@ agent = create_agent(
     model=model,
     # tools=[search_knowledge_base, get_knowledge_base_status],
     checkpointer=InMemorySaver(),
-    context_schema=Context
+    context_schema=Context,
 )

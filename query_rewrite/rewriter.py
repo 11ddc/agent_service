@@ -108,6 +108,9 @@ def rewrite_query(question: str, history: list[dict]) -> str:
             ],
         )
         rewritten = (response.choices[0].message.content or "").strip()
+
+        print(f"查询改写：\n原问题: {question}\n改写后: {rewritten}")
+
         # 防止乱改 回退原问题
         if not rewritten or len(rewritten) > len(question) * 3 + 50:
             return question

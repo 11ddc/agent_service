@@ -1,9 +1,10 @@
-from fastapi import FastAPI
 import uvicorn
+from fastapi import FastAPI
+
 from cors import setup_cors
 from router.router import register_routers
 
-# from agent.graph import graph 
+# from agent.graph import graph
 # from ag_ui_langgraph import add_langgraph_fastapi_endpoint
 
 # Redis 客户端统一在 redis_client.py 里管理（模块级单例，全局共享）
@@ -23,4 +24,4 @@ register_routers(app)
 
 # 启动脚本
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000) # 端口要与前端配置的 api-url 一致
+    uvicorn.run(app, host="127.0.0.1", port=8000)  # 端口要与前端配置的 api-url 一致
