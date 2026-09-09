@@ -6,7 +6,10 @@ chroma_db/
 images
 knowledge_base
 Reank_models
-
+tests
+.dsh
+.dsh/skills
+.dsh-test-tools
 __pycache__/
 *.py[cod]
 *.so
@@ -27,3 +30,5 @@ __pycache__/
 
 *.tmp
 .DS_Store
+11.docx
+pytest.ini

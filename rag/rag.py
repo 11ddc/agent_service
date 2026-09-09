@@ -23,6 +23,7 @@ from PIL import Image
 from rank_bm25 import BM25Okapi
 
 from rag.local_reranker import LocalReranker
+from rag.vision_ocr import hybrid_image_text
 
 # 清楚 chromadb 的缓存，避免报错
 # import chromadb.api.shared_system_client as shared
@@ -30,7 +31,7 @@ from rag.local_reranker import LocalReranker
 # import pymupdf4llm
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 reranker = LocalReranker()
 
@@ -60,12 +61,17 @@ _bm25_lock = threading.Lock()
 _PUNCT_RE = re.compile(r"[，。！？、；：‘’“”（）《》【】\s]+")
 
 # ── 可调参数 ─────────────────────────────────────────────
-CHUNK_SIZE = 500
+# 如果增大切片的字符  会导致检索不准确
+CHUNK_SIZE = 1000
+# 数据冗余急剧增加。总切片数量会增加，向量数据库存储量变大，检索时容易召回内容高度重复的Chunk，浪费上下文窗口
 CHUNK_OVERLAP = 50
 # rrf使用
+# topk的增大 只是增加了候选切片的数量 反而给重排序排序增加工作量
 TOP_K = 20
-# 重排使用
-TOP_N = 4
+# 重排使用  调大这个 可以让文档的相关性更高 但是会增加计算量（即文档检索出来的内容更齐全不会因为切片等因素导致缺少内容）
+# 但数量越多越消耗生成模型的token
+# 增大也容易导致数据的准确性下降
+TOP_N = 10
 
 # 知识库默认目录：项目根目录下的 knowledge_base/
 KNOWLEDGE_BASE_DIR = Path(__file__).resolve().parent.parent / "knowledge_base"
@@ -122,13 +128,19 @@ def _load_pdf(file_path: str) -> list[Document]:
         for img_ref in find_image_references(content):
             img_path = IMAGES_DIR / img_ref  # ③ 读取：绝对路径，与 CWD 无关
             if img_path.exists():
+                img_bytes = img_path.read_bytes()
                 ocr_text = pytesseract.image_to_string(
                     Image.open(img_path), lang="chi_sim+eng"
                 )
                 print(f"OCR 识别图片 {img_ref} 的文字: {ocr_text}")
-                if ocr_text.strip():
-                    content += f"\n\n[图片内容]: {ocr_text.strip()}"
+                # 视觉模型增强（混合方案）:OCR 为空/过短时自动补一轮 Qwen3-VL,见 rag/vision_ocr.py
+                final_text = hybrid_image_text(
+                    img_bytes, ocr_text, source=f"{file_path}#{img_ref}"
+                )
+                if final_text.strip():
+                    content += f"\n\n[图片内容]: {final_text.strip()}"
 
+                    print(f"[视觉增强] 图片 {img_ref} 的最终文字: {final_text.strip()}")
         docs.append(
             Document(
                 page_content=content.strip(),
@@ -245,7 +257,7 @@ def _guess_image_ext(content_type: str, blob: bytes) -> str:
         return ".webp"
     if blob[:4] in (b"II*\x00", b"MM\x00*"):
         return ".tiff"
-    if blob[:4] == b"BM":
+    if blob[:2] == b"BM":  # BMP 魔数只有 2 字节(修:原写法 blob[:4] == b"BM" 永远为假)
         return ".bmp"
     return ".png"  # 无法识别时默认 png
 
@@ -275,7 +287,9 @@ def _extract_and_ocr_docx_images(doc, file_path: Path, outputimages: str) -> lis
             text = pytesseract.image_to_string(Image.open(img_path), lang="chi_sim+eng")
         except Exception as e:
             print(f"OCR 识别图片 {img_path.name} 失败: {e}")
-            continue
+            text = ""  # 本地 OCR 失败不跳过:留给视觉模型补救
+        # 视觉模型增强（混合方案）:OCR 为空时补 Qwen3-VL,见 rag/vision_ocr.py
+        text = hybrid_image_text(blob, text, source=str(img_path))
 
         if text.strip():
             print(f"OCR 识别图片 {img_path.name} 的文字: {text.strip()}")

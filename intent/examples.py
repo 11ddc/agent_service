@@ -130,6 +130,7 @@ INTENT_EXAMPLES = {
         "我要换货",
         "换货",
         "我要退换货",
+        "客户对话记录表",
     ],
     IntentName.CHITCHAT: [
         "你好",

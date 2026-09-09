@@ -17,7 +17,7 @@ import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 client = OpenAI(
     api_key=os.getenv("QIAN_WEN_QUERYSTION_API_KEY"),

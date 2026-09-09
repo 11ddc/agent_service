@@ -27,7 +27,7 @@ from intent.examples import (
 )
 from intent.schemas import IntentName, IntentOutput, IntentResult
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 # ── 可调阈值（B/C 级）────────────────────────────────────
 EMBED_HIGH_THRESHOLD = 0.60  # embedding 最高分超过它且拉开差距 → 直接判定

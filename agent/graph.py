@@ -121,10 +121,13 @@ def tool_call_node(state: AgentState) -> dict:
 
         print(f"调用工具：{tool_name}，参数：{tool_args}")  # 清晰打印
 
-        # ── MCP 接入点②（新增）：外部 MCP 工具（mcp__<server>__<tool>）由 mcp_client 执行
+        # ── MCP 接入点②:外部 MCP 工具(mcp__<server>__<tool>)由 mcp_client 同步执行
         if tool_name.startswith("mcp__"):
-            # result = mcp_client.call_mcp_tool_sync(tool_name, tool_args)
-            result = call_mcp_tool({"tool_name": tool_name, "tool_args": tool_args})
+            try:
+                result = call_mcp_tool(tool_name, tool_args)  # 同步桥,签名 (name, args)
+            except Exception as e:
+                print(f"MCP 工具调用失败: {e}")
+                result = f"[MCP 工具执行失败: {e!s}]"
             tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
 
         elif tool_name == "searchOrder":
@@ -196,6 +199,9 @@ def llm_call_node(state: AgentState) -> dict:
 
     except Exception as e:
         print(f"调用智谱chat模型失败: {e}")
+        # 上抛而不是静默返回 None:否则消息停在 HumanMessage,
+        # 会被 tool_continue/data_node 当成"用户原问题"回显;抛出让外层兜底接管。
+        raise
 
 
 # llm判断是否需要调用工具
@@ -203,7 +209,9 @@ def tool_continue(state: AgentState) -> Literal["tool_call", END]:
 
     last_msg = state["messages"][-1]
     print("tool_continue检查是否需要调用工具，last_msg:", last_msg)
-    if last_msg.tool_calls:
+    # 用 getattr 判空:最后一条可能是 HumanMessage(没有 tool_calls 属性),
+    # 直接访问会抛 AttributeError 把整图带崩(原实现就是这么挂的)。
+    if getattr(last_msg, "tool_calls", None):
         return "tool_call"
     else:
         return "data_node"
@@ -252,6 +260,7 @@ def rag_node(state: AgentState) -> dict:
         # 生成
         result = Generator.generate_answer(state["question"], docs)
 
+        print(f"RAG 生成结果: {result}")
     except KnowledgeBaseError as e:
         print(f"知识库不可用: {e}")
         result = str(e)  # 连接失败/空库 → 把具体提示语原样返回给用户
@@ -288,7 +297,6 @@ def merge_node(state: AgentState) -> dict:
         if slots is not None and (slots.source or slots.keyword or slots.time_range):
             meta["slots"] = slots.model_dump()
 
-    print("主图的anwer：", state.get("answer"), "meta:", meta)
     return {"answer": state.get("answer") or "", "meta": meta}
 
 
@@ -374,7 +382,6 @@ def build_main_graph():
     )
     g.add_edge("question_flow", END)
     g.add_edge("multi_loop", END)
-    print("主图")
     return g.compile()
 
 

@@ -4,7 +4,7 @@ import traceback
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 RAG_PROMPT = """你是一个严谨的知识助手。请严格基于以下【参考资料】回答用户问题，不要编造资料中不存在的信息。
 
@@ -16,6 +16,11 @@ RAG_PROMPT = """你是一个严谨的知识助手。请严格基于以下【参�
 2. 在每个关键论断后用 [doc{{i}}] 标注来源（i 对应上面文档编号）
 3. 如果资料不足以回答，直接说"根据现有资料无法回答"，不要猜测
 4. 答案结构清晰，分点叙述
+【重要：输出完整性约束】
+1. 您必须将检索到的所有文档片段中，关于“客服对话记录表”的字段信息**全部合并**，形成一个完整的字段列表。
+2. 如果同一字段在多个片段中出现，只需列出一次，但**不能遗漏任何在任意片段中出现的字段**。
+3. 请以 Markdown 表格形式输出完整字段清单，格式为：| 字段名 | 数据类型 | 字段说明 | 示例值 |
+4. 输出内容必须涵盖以下所有片段中的字段信息，包括但不限于：doc2、doc5、以及任何其他提到该表字段的片段。
 
 【用户问题】
 {question}
@@ -68,6 +73,7 @@ class RAGGenerator:
                 stream=False,
                 # 温度越高llm越自由发挥
                 temperature=0.3,
+                # 限制生成模型的输出长度，避免生成过长的回答
                 max_tokens=2000,
             )
         except Exception as e:

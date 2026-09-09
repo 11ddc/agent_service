@@ -12,7 +12,7 @@ from openai import OpenAI
 from mcp_client import get_mcp_tools_definition
 
 # 有这个才能进env文件读取内容
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 TOOL_MAX = 5
 
@@ -70,9 +70,10 @@ tools = [
 ]
 
 
-async def call_zhipu_chat(messages: list) -> str:
-    # 格式转换
-    mcp_tools = await get_mcp_tools_definition()
+def call_zhipu_chat(messages: list):
+    # 格式转换(同步:内部用 asyncio.run 拉 MCP 工具,见 mcp_client.py)
+    mcp_tools = get_mcp_tools_definition()
+    print(f"MCP工具列表，mcp_tools: {mcp_tools}")
 
     payload = convert_to_openai_messages(messages)
     print("调用智谱chat模型，messages:", payload)

@@ -14,7 +14,7 @@ import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 _MODEL = "deepseek-chat"
 _TEMPERATURE = 0.2  # 改写要稳定，低温；与 agent 的 0.7 区分开

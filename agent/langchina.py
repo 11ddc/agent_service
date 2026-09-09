@@ -7,7 +7,7 @@ from langchain.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env(键名不会被 \ufeff 污染)
 
 # ── 初始化模型（全局单例）────────────────────────────────
 model = ChatOpenAI(
