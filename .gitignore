@@ -6,7 +6,6 @@ chroma_db/
 images
 knowledge_base
 Reank_models
-tests
 .dsh
 .dsh/skills
 .dsh-test-tools
@@ -14,21 +13,32 @@ __pycache__/
 *.py[cod]
 *.so
 .Python
-
-
+resume-output
 *.log
 *.db
 *.sqlite3
-
+db
 .env.local
 .env.*.local
-
-
+tests
+eval
 .vscode/
 .idea/
-
+pytest.ini
 
 *.tmp
 .DS_Store
+
+# RAG 评测：**脚本文档标注集要提交**，只有跑出来的产物不入库。
+# （原来这里是一条裸的 `eval`，把整个目录都忽略了，于是这条注释本身就是假的：
+#   脚本、标注集、README 全都没进版本库。）
+# eval/ 下要提交：retrieval_recall.py、README.md、queries.jsonl、gen/、golden/
+eval/cache/
+eval/_chunks.json
+eval/detail.csv
+eval/misses.md
+# 生成物：语料本体与报告都可由 seed 复现，不入库（生成器与 golden 入库）
+eval/corpus/
+eval/reports/
+eval/run-*.json
 11.docx
-pytest.ini

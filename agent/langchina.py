@@ -73,7 +73,6 @@ def get_knowledge_base_status() -> str:
 # ── 创建 Agent（全局单例）────────────────────────────────
 agent = create_agent(
     model=model,
-    # tools=[search_knowledge_base, get_knowledge_base_status],
     checkpointer=InMemorySaver(),
     context_schema=Context,
 )

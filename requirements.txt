@@ -16,9 +16,16 @@ python-multipart
 langchain-openai
 pymupdf4llm
 python-docx
+openpyxl
 python-dotenv
 sse-starlette
 dashscope
 rank-bm25
 jieba
 sentence-transformers
+# 父块存储：rag.py 依赖 db/ 包，db.mysql 需要 PyMySQL 驱动
+PyMySQL
+# 以下两个是 rag.py 顶层就 import 的依赖，之前漏在 requirements.txt 外面 ——
+# 全新环境按本文件安装会直接 import 失败
+pytesseract
+pillow

@@ -5,7 +5,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessa
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from agent.events import (  # 流式事件旁路（同步链路下 emit 是空操作）
+    current_emitter,
+    emit,
+)
 from agent.langchina import agent
+from context_budget import input_budget
 from intent.classifier import classify
 from intent.problemdecomposition import split_questions
 from intent.schemas import IntentName, IntentResult
@@ -41,6 +46,12 @@ class AgentState(TypedDict):
 
 
 Generator = RAGGenerator()
+
+# ── RAG 资料预算（token）──────────────────────────────────
+# 输入总预算 = 模型窗口 - 输出预留(max_tokens) - 安全边际（见 context_budget.input_budget）
+# 再扣掉 RAG_PROMPT 模板与用户问题的预留，剩下的才是能给"检索资料"的额度。
+# 模板约 400 token、问题约 100 token，留 1000 足够，不用精算。
+RAG_DOC_BUDGET = max(1000, input_budget() - 1000)
 
 
 # query改写节点
@@ -250,15 +261,42 @@ def short_circuit_node(state: AgentState) -> dict:
 
 # 调用检索接口
 def rag_node(state: AgentState) -> dict:
-    """RAG 节点（薄图版）：直接复用 retrieve_sync（多路召回+RRF 融合），行为与现在一致。"""
+    """RAG 节点（薄图版）：直接复用 retrieve_sync（多路召回+RRF 融合），行为与现在一致。
+
+    流式：RAG 是唯一会产出 token 流的路径。emitter 为 None 时（同步 /chat 链路）
+    下面所有 emit() 都是空操作，因此行为与改造前一致。
+    """
+    emitter = current_emitter()  # None = 同步链路（/chat）
     try:
+        # 检索+重排+装箱是纯同步耗时，先给前端一个阶段提示，避免用户盯着空白
+        # 推事件给前端
+        emit({"type": "status", "stage": "retrieving", "text": "正在检索知识库…"})
         answer = retrieve_sync(state["question"])
         if not answer:
             return {"answer": "未在知识库中找到与问题相关的内容。"}
         # 将检索到的答案进行重排序
         docs = reordering(state["question"], answer)
-        # 生成
-        result = Generator.generate_answer(state["question"], docs)
+
+        # ── 预检：重排之后、生成之前，按 token 预算装箱 ──────────────
+        # 1. pack_docs 按相关性顺序装箱，装不下的从尾部丢弃（重排已排序，丢尾=丢最不相关）
+        # 2. 先丢弃后编号，保证 prompt 里的 [docN] 引用不错位
+        # 3. 丢块时自动附"资料不完整"声明，避免模型给出看似完整实则缺项的答案
+        # 4. 万一仍被判超限 → 预算降 1/2、1/4 重试 → 最后退到 map-reduce 分段生成
+        #    （实现见 rag/generatellm.generate_answer_within_budget）
+        emit({"type": "status", "stage": "generating", "text": "正在生成回答…"})
+        gen = Generator.generate_answer_within_budget(
+            state["question"],
+            docs,
+            # token预算
+            budget_tokens=RAG_DOC_BUDGET,
+            emit=emitter,  # None → 非流式（/chat 链路）；回调 → 边生成边推 delta
+        )
+        result = gen["answer"]
+        print(
+            f"[RAG预算] 预算={gen['budget_tokens']} 实耗={gen['used_tokens']} "
+            f"资料={gen['kept']}/{gen['kept'] + gen['dropped']} 丢弃={gen['dropped']} "
+            f"截断={gen['truncated']} 降级={gen['degraded']} 重试={gen['retries']}"
+        )
 
         print(f"RAG 生成结果: {result}")
     except KnowledgeBaseError as e:
@@ -303,9 +341,14 @@ def merge_node(state: AgentState) -> dict:
 def multi_loop_node(state: AgentState) -> dict:
     """多问题节点（薄图版）：顺序调用单问题子图，每个子问题走完整流程，最后合并。"""
     parts, last_meta = [], None
-    for q in state["sub_questions"]:
+    for i, q in enumerate(state["sub_questions"]):
         print("多问题循环：", q)
-        # 循环走单问题子图
+        if i:
+            # 必须与下面 "\n".join(parts) 的分隔保持一致，否则流式正文会缺
+            # 子问题之间的换行（同步链路下 emit 是空操作，无影响）。
+            emit({"type": "delta", "content": "\n"})
+        # 循环走单问题子图。子图是同步调用、同一个线程 → 子图节点里的 emit()
+        # 能直接读到本线程的 emitter，不需要额外透传参数。
         r = question_graph.invoke({"question": q, "session_id": state["session_id"]})
         parts.append(r.get("answer") or "")
         last_meta = r.get("meta") or last_meta
