@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from uuid import uuid4
 
 from fastapi import APIRouter
@@ -10,10 +11,12 @@ from agent.events import (  # 流式事件旁路（同步链路下为空操作�
     reset_emitter,
     set_emitter,
 )
-from agent.graph import graph  # LangGraph 编排图（拆分→意图→路由→处理→汇总）
+from agent.graph import agent_node, graph  # LangGraph 编排图（拆分→意图→路由→处理→汇总）
 from intent.examples import HANDOFF_RE
 from query_rewrite import aappend_history
 from redis_client import redis_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -47,13 +50,22 @@ async def servercustomer(query: str, session_id: str) -> str | None:
 
 
 def _answer_by_agent(question: str, session_id: str) -> str:
-    """让 Agent 单独回答一个问题（图异常兜底 / 多问题全空时降级）。"""
-    # agent_result = agent.invoke(
-    #     {"messages": [{"role": "user", "content": question}]},
-    #     config={"configurable": {"thread_id": session_id}},
-    # )
-    # return agent_result["messages"][-1].content
-    return "兜底agent回答: "
+    """让 Agent 单独回答一个问题（图异常兜底 / 多问题全空时降级）。
+
+    直接复用 agent/graph.py 的 agent_node，而不是在这里重写一遍 invoke。
+    以前这里是个**占位实现**：真实调用整段被注释掉，无条件返回硬编码的
+    "兜底agent回答: "。而它挂在两条真实路径上（图异常、答案为空），
+    所以编排图一挂，用户看到的就是这串占位符 + HTTP 200。
+
+    agent_node 内部自带 try/except，失败时返回一句诚实的降级文案，不会让异常穿透。
+    它是同步阻塞调用（内部要发网络请求），调用方务必用 asyncio.to_thread 包起来。
+    """
+    result = agent_node({"question": question, "session_id": session_id})
+    answer = (result or {}).get("answer") or ""
+    # 必须保证非空：调用方用 falsy 判断"要不要继续降级"，返回空串会让它再调一次
+    # （白跑一轮），而且最终可能把空 answer 发给前端。agent_node 自己已经处理了异常，
+    # 这里只兜"模型返回了空内容"这一种情况。文案与 agent_node 的失败文案一致。
+    return answer or "抱歉，我暂时无法回答这个问题，请稍后重试。"
 
 
 @router.post("/chat")
@@ -97,14 +109,21 @@ async def chat(request: ChatRequest):
 
         print(f"编排图执行完成，answer: {answer}, meta: {meta}")
     except Exception as e:
-        print(f"编排图执行失败，降级直连 Agent: {e}")
-        answer = _answer_by_agent(request.question, request.session_id)
+        # 这里必须留痕：走到这条分支意味着整张编排图挂了，用户拿到的是 Agent
+        # 单问单答（没有检索、没有拆分）。以前是 print，INFO 级日志里查不到。
+        logger.warning("编排图执行失败，降级直连 Agent: %s", e)
+        # agent_node 是同步阻塞调用（内部发网络请求），必须丢线程池，否则卡住事件循环
+        answer = await asyncio.to_thread(
+            _answer_by_agent, request.question, request.session_id
+        )
         meta = {"intent": "unknown", "method": "fallback"}
 
     # 与旧逻辑对齐：多问题全部检索为空时，用原问题整体兜底给 Agent
     if not answer:
-        print("编排图执行结果为空，降级直连 Agent")
-        answer = _answer_by_agent(request.question, request.session_id)
+        logger.warning("编排图执行结果为空，降级直连 Agent")
+        answer = await asyncio.to_thread(
+            _answer_by_agent, request.question, request.session_id
+        )
         meta = {"intent": "unknown", "method": "fallback"}
 
     if handoff_msg:

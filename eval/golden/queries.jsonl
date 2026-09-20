@@ -1,0 +1,174 @@
+{"query": "岚盾 L1 的整机保修期是多久？", "bucket": "原词", "file": "岚盾L1系列_产品手册_v2.1.pdf", "anchor": "岚盾 L1 整机保修期为 24 个月，自签收之日起算。", "kind": "single_hop"}
+{"query": "岚盾 L1 Pro 保修多长时间？", "bucket": "原词", "file": "岚盾L1系列_产品手册_v2.1.pdf", "anchor": "岚盾 L1 Pro 整机保修期为 36 个月，含免费上门服务。", "kind": "single_hop"}
+{"query": "岚盾 L1 Pro 卖多少钱？", "bucket": "原词", "file": "岚盾L1系列_产品手册_v2.1.pdf", "anchor": "岚盾 L1 Pro 市场零售价为 1799 元。", "kind": "single_hop"}
+{"query": "上门安装是多久响应？", "bucket": "原词", "file": "上门安装服务规范.docx", "anchor": "市区范围内 24 小时内上门响应，郊区 48 小时内响应。", "kind": "single_hop"}
+{"query": "延保 12 个月要多少钱？", "bucket": "原词", "file": "质保与延保说明.docx", "anchor": "可加购 12 个月延保服务，价格为 299 元。", "kind": "single_hop"}
+{"query": "保外维修 L1 Pro 多少钱？", "bucket": "原词", "file": "质保与延保说明.docx", "anchor": "保外维修价目：L1 为 199 元，L1 Pro 为 299 元，L2 为 159 元，L2 Pro 为 259 元。", "kind": "table_lookup"}
+{"query": "无理由退货的政策在 v2 里改成了几天？", "bucket": "原词", "file": "售后服务政策_v2_2025.docx", "anchor": "无理由退货期限调整为 15 天，自 2025 年 3 月 1 日起生效。", "kind": "version_conflict"}
+{"query": "L1 Pro 电池的备件价格是多少？", "bucket": "原词", "file": "岚盾配件兼容表.pdf", "anchor": "备件价格：L1 电池 89 元，L1 Pro 电池 129 元。", "kind": "table_lookup"}
+{"query": "网关配对码默认是多少？", "bucket": "原词", "file": "术语表_GBK.txt", "anchor": "网关配对码默认为 8888，可在 App 内修改。", "kind": "encoding_sentinel", "expect": "该文件是 GBK 编码，当前会解析失败 → 本条预期召回失败，用于暴露编码问题"}
+{"query": "门锁没电了怎么应急供电？", "bucket": "口语改写", "file": "岚盾L1Pro_安装指南.pdf", "anchor": "门锁电量耗尽时，可用 Type-C 接口外接 5V/1A 电源应急供电。", "kind": "ocr_page", "expect": "事实只出现在扫描页，必须走 OCR 才能召回"}
+{"query": "装锁师傅多久能到我家？", "bucket": "口语改写", "file": "上门安装服务规范.docx", "anchor": "市区范围内 24 小时内上门响应，郊区 48 小时内响应。", "kind": "paraphrase"}
+{"query": "质量问题退回去的运费谁掏？", "bucket": "口语改写", "file": "售后服务政策_v2_2025.docx", "anchor": "因质量问题退货的，来回运费均由卖方承担。", "kind": "version_conflict"}
+{"query": "想要多保一年得花多少钱？", "bucket": "口语改写", "file": "质保与延保说明.docx", "anchor": "可加购 12 个月延保服务，价格为 299 元。", "kind": "paraphrase"}
+{"query": "哪些型号能用天地钩锁体？", "bucket": "口语改写", "file": "岚盾L1系列_产品手册_v2.1.pdf", "anchor": "支持天地钩的型号为 L1 Pro 与 L2 Pro；L1 与 L2 不支持天地钩。", "kind": "paraphrase"}
+{"query": "一次解决率是什么意思？", "bucket": "口语改写", "file": "产品术语与别名表.md", "anchor": "一次解决率（resolution_rate）指客服首次接触即解决问题的比例。", "kind": "term"}
+{"query": "岚盾 L1 尊享版是哪个型号？", "bucket": "口语改写", "file": "产品术语与别名表.md", "anchor": "岚盾 L1 尊享版的正式型号为 L1 Pro，物料编码为 LD-L1P。", "kind": "alias"}
+{"query": "LD-L1P 是哪个产品？", "bucket": "口语改写", "file": "产品术语与别名表.md", "anchor": "岚盾 L1 尊享版的正式型号为 L1 Pro，物料编码为 LD-L1P。", "kind": "alias"}
+{"query": "L1 Pro 上门安装要收费吗？整机保修多久？", "bucket": "跨文档", "file": "上门安装服务规范.docx", "anchor": "上门安装服务费为 199 元；L1 Pro 与 L2 Pro 免上门费。", "kind": "multi_hop", "also_files": ["岚盾L1系列_产品手册_v2.1.pdf"]}
+{"query": "L2 和 L2 Pro 的保修期一样吗？", "bucket": "跨文档", "file": "岚盾产品参数对照表.xlsx", "anchor": "| L2 Pro | LD-L2P | 1499 | 12 |", "kind": "multi_hop"}
+{"query": "买了延保之后总共能保修多久？", "bucket": "跨文档", "file": "质保与延保说明.docx", "anchor": "延保服务需在整机保修期内购买，购买后总保修期在原基础上顺延 12 个月。", "kind": "multi_hop"}
+{"query": "锁体安装孔距是多少毫米？", "bucket": "跨文档", "file": "岚盾L1系列_产品手册_v2.1.pdf", "anchor": "天地钩锁体安装孔距为 60mm。", "kind": "table_lookup"}
+{"query": "L2 Pro 的价格和电池容量分别是多少？", "bucket": "跨文档", "file": "产品变更记录.md", "anchor": "岚盾 L2 Pro 市场零售价为 1499 元，含一次免费上门安装。", "kind": "multi_hop", "also_files": ["岚盾产品参数对照表.xlsx"]}
+{"query": "云枢 S3 音箱的保修期是多久？", "bucket": "跨文档", "file": "云枢S3音箱_产品手册.pdf", "anchor": "云枢 S3 智能音箱整机保修期为 24 个月。", "kind": "distractor"}
+{"query": "云枢 S3 有多重？", "bucket": "跨文档", "file": "云枢S3音箱_参数表.xlsx", "anchor": "| S3 | 399 | 24 | 0.6 |", "kind": "distractor"}
+{"query": "云枢 S3 固件升级要收费吗？", "bucket": "跨文档", "file": "云枢S3音箱_产品手册.pdf", "anchor": "云枢 S3 固件升级免费，通过 App 推送完成。", "kind": "distractor"}
+{"query": "What is the warranty period of the L2 Pro?", "bucket": "跨文档", "file": "岚盾L2Pro_User_Manual_EN.pdf", "anchor": "warranty period of the L2 Pro is 12 months", "kind": "english"}
+{"query": "岚盾 L3 的售价是多少？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "不存在该型号，正确行为是不作答/说明资料不足"}
+{"query": "岚盾门锁是哪一年上市的？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "语料未记载上市时间"}
+{"query": "岚盾和云枢哪个更值得买？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "主观比较，语料无法回答"}
+{"query": "帮我写一份门锁采购合同模板", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "生成类请求，非知识库问题"}
+{"query": "今天北京机动车限行尾号是多少？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "域外实时信息"}
+{"query": "岚盾 L1 的固件升级要多少钱？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "固件升级是云枢产品线的话题，门锁语料里没有 → 强干扰负样本"}
+{"query": "华东仓的标准锁体（SL-1001）单价是多少元？", "bucket": "编号检索", "file": "备件总表_华东仓.xlsx", "anchor": "| SL-1001 | 标准锁体 | 120 |", "kind": "same_code_cross_region"}
+{"query": "华南仓的天地钩锁体（SL-1002）单价是多少元？", "bucket": "编号检索", "file": "备件总表_华南仓.xlsx", "anchor": "| SL-1002 | 天地钩锁体 | 130 |", "kind": "same_code_cross_region"}
+{"query": "华北仓的L1 电池（BT-2001）单价是多少元？", "bucket": "编号检索", "file": "备件总表_华北仓.xlsx", "anchor": "| BT-2001 | L1 电池 | 134 |", "kind": "same_code_cross_region"}
+{"query": "西南仓的L1 Pro 电池（BT-2002）单价是多少元？", "bucket": "编号检索", "file": "备件总表_西南仓.xlsx", "anchor": "| BT-2002 | L1 Pro 电池 | 144 |", "kind": "same_code_cross_region"}
+{"query": "华中仓的指纹模块（FP-3001）单价是多少元？", "bucket": "编号检索", "file": "备件总表_华中仓.xlsx", "anchor": "| FP-3001 | 指纹模块 | 148 |", "kind": "same_code_cross_region"}
+{"query": "东北仓的网关模块（GW-4001）单价是多少元？", "bucket": "编号检索", "file": "备件总表_东北仓.xlsx", "anchor": "| GW-4001 | 网关模块 | 155 |", "kind": "same_code_cross_region"}
+{"query": "西北仓的前面板（PN-5001）单价是多少元？", "bucket": "编号检索", "file": "备件总表_西北仓.xlsx", "anchor": "| PN-5001 | 前面板 | 162 |", "kind": "same_code_cross_region"}
+{"query": "东南仓的排线（CB-6001）单价是多少元？", "bucket": "编号检索", "file": "备件总表_东南仓.xlsx", "anchor": "| CB-6001 | 排线 | 169 |", "kind": "same_code_cross_region"}
+{"query": "中原仓的锁芯（CY-7001）单价是多少元？", "bucket": "编号检索", "file": "备件总表_中原仓.xlsx", "anchor": "| CY-7001 | 锁芯 | 176 |", "kind": "same_code_cross_region"}
+{"query": "工单 WO-2501-0002 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-01.xlsx", "anchor": "WO-2501-0002", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2502-0003 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-02.xlsx", "anchor": "WO-2502-0003", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2503-0004 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-03.xlsx", "anchor": "WO-2503-0004", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2504-0005 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-04.xlsx", "anchor": "WO-2504-0005", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2505-0006 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-05.xlsx", "anchor": "WO-2505-0006", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2506-0007 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-06.xlsx", "anchor": "WO-2506-0007", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2507-0008 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-07.xlsx", "anchor": "WO-2507-0008", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2508-0009 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-08.xlsx", "anchor": "WO-2508-0009", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2509-0010 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-09.xlsx", "anchor": "WO-2509-0010", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2510-0011 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-10.xlsx", "anchor": "WO-2510-0011", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2511-0012 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-11.xlsx", "anchor": "WO-2511-0012", "kind": "unique_id_lookup"}
+{"query": "工单 WO-2512-0013 的处理时长是多少小时？", "bucket": "编号检索", "file": "工单样例_2025-12.xlsx", "anchor": "WO-2512-0013", "kind": "unique_id_lookup"}
+{"query": "L1 型号的故障码 E-L1-1001 是什么现象？", "bucket": "编号检索", "file": "故障码手册_L1.md", "anchor": "E-L1-1001", "kind": "same_code_cross_model"}
+{"query": "L1 Pro 型号的故障码 E-L1Pro-1008 是什么现象？", "bucket": "编号检索", "file": "故障码手册_L1 Pro.md", "anchor": "E-L1Pro-1008", "kind": "same_code_cross_model"}
+{"query": "L2 型号的故障码 E-L2-1015 是什么现象？", "bucket": "编号检索", "file": "故障码手册_L2.md", "anchor": "E-L2-1015", "kind": "same_code_cross_model"}
+{"query": "L2 Pro 型号的故障码 E-L2Pro-1022 是什么现象？", "bucket": "编号检索", "file": "故障码手册_L2 Pro.md", "anchor": "E-L2Pro-1022", "kind": "same_code_cross_model"}
+{"query": "L3 型号的故障码 E-L3-1029 是什么现象？", "bucket": "编号检索", "file": "故障码手册_L3.md", "anchor": "E-L3-1029", "kind": "same_code_cross_model"}
+{"query": "L3 Pro 型号的故障码 E-L3Pro-1036 是什么现象？", "bucket": "编号检索", "file": "故障码手册_L3 Pro.md", "anchor": "E-L3Pro-1036", "kind": "same_code_cross_model"}
+{"query": "X1 型号的故障码 E-X1-1043 是什么现象？", "bucket": "编号检索", "file": "故障码手册_X1.md", "anchor": "E-X1-1043", "kind": "same_code_cross_model"}
+{"query": "X1 Pro 型号的故障码 E-X1Pro-1050 是什么现象？", "bucket": "编号检索", "file": "故障码手册_X1 Pro.md", "anchor": "E-X1Pro-1050", "kind": "same_code_cross_model"}
+{"query": "Q1 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q1.md", "anchor": "Q1 例会决议：华东仓备件安全库存下限调整为 120 件。", "kind": "planted_fact"}
+{"query": "Q2 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q2.md", "anchor": "Q2 例会决议：华南仓备件安全库存下限调整为 135 件。", "kind": "planted_fact"}
+{"query": "Q3 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q3.md", "anchor": "Q3 例会决议：华北仓备件安全库存下限调整为 150 件。", "kind": "planted_fact"}
+{"query": "Q4 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q4.md", "anchor": "Q4 例会决议：西南仓备件安全库存下限调整为 165 件。", "kind": "planted_fact"}
+{"query": "Q1下半年 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q1下半年.md", "anchor": "Q1下半年 例会决议：华中仓备件安全库存下限调整为 180 件。", "kind": "planted_fact"}
+{"query": "Q2下半年 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q2下半年.md", "anchor": "Q2下半年 例会决议：东北仓备件安全库存下限调整为 195 件。", "kind": "planted_fact"}
+{"query": "Q3下半年 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q3下半年.md", "anchor": "Q3下半年 例会决议：西北仓备件安全库存下限调整为 210 件。", "kind": "planted_fact"}
+{"query": "Q4下半年 例会决定把备件安全库存下限调到多少件？", "bucket": "编号检索", "file": "服务例会纪要_Q4下半年.md", "anchor": "Q4下半年 例会决议：东南仓备件安全库存下限调整为 225 件。", "kind": "planted_fact"}
+{"query": "变更单 CR-门锁-2001 改了什么？", "bucket": "编号检索", "file": "产品变更记录_门锁线.md", "anchor": "CR-门锁-2001", "kind": "unique_id_lookup"}
+{"query": "变更单 CR-音箱-2012 改了什么？", "bucket": "编号检索", "file": "产品变更记录_音箱线.md", "anchor": "CR-音箱-2012", "kind": "unique_id_lookup"}
+{"query": "变更单 CR-摄像头-2023 改了什么？", "bucket": "编号检索", "file": "产品变更记录_摄像头线.md", "anchor": "CR-摄像头-2023", "kind": "unique_id_lookup"}
+{"query": "变更单 CR-门铃-2034 改了什么？", "bucket": "编号检索", "file": "产品变更记录_门铃线.md", "anchor": "CR-门铃-2034", "kind": "unique_id_lookup"}
+{"query": "变更单 CR-网关-2045 改了什么？", "bucket": "编号检索", "file": "产品变更记录_网关线.md", "anchor": "CR-网关-2045", "kind": "unique_id_lookup"}
+{"query": "变更单 CR-传感器-2056 改了什么？", "bucket": "编号检索", "file": "产品变更记录_传感器线.md", "anchor": "CR-传感器-2056", "kind": "unique_id_lookup"}
+{"query": "变更单 CR-配件-2067 改了什么？", "bucket": "编号检索", "file": "产品变更记录_配件线.md", "anchor": "CR-配件-2067", "kind": "unique_id_lookup"}
+{"query": "变更单 CR-中控-2078 改了什么？", "bucket": "编号检索", "file": "产品变更记录_中控线.md", "anchor": "CR-中控-2078", "kind": "unique_id_lookup"}
+{"query": "术语编号 T-门锁硬件-001 指的是什么？", "bucket": "编号检索", "file": "术语总表_门锁硬件.md", "anchor": "T-门锁硬件-001", "kind": "unique_id_lookup"}
+{"query": "术语编号 T-联网与网关-024 指的是什么？", "bucket": "编号检索", "file": "术语总表_联网与网关.md", "anchor": "T-联网与网关-024", "kind": "unique_id_lookup"}
+{"query": "术语编号 T-售后流程-047 指的是什么？", "bucket": "编号检索", "file": "术语总表_售后流程.md", "anchor": "T-售后流程-047", "kind": "unique_id_lookup"}
+{"query": "术语编号 T-安装施工-070 指的是什么？", "bucket": "编号检索", "file": "术语总表_安装施工.md", "anchor": "T-安装施工-070", "kind": "unique_id_lookup"}
+{"query": "术语编号 T-数据指标-093 指的是什么？", "bucket": "编号检索", "file": "术语总表_数据指标.md", "anchor": "T-数据指标-093", "kind": "unique_id_lookup"}
+{"query": "术语编号 T-备件物流-016 指的是什么？", "bucket": "编号检索", "file": "术语总表_备件物流.md", "anchor": "T-备件物流-016", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-1-001 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第1批.md", "anchor": "BATCH-1-001", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-2-018 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第2批.md", "anchor": "BATCH-2-018", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-3-035 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第3批.md", "anchor": "BATCH-3-035", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-4-052 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第4批.md", "anchor": "BATCH-4-052", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-5-009 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第5批.md", "anchor": "BATCH-5-009", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-6-026 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第6批.md", "anchor": "BATCH-6-026", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-7-043 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第7批.md", "anchor": "BATCH-7-043", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-8-060 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第8批.md", "anchor": "BATCH-8-060", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-9-017 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第9批.md", "anchor": "BATCH-9-017", "kind": "unique_id_lookup"}
+{"query": "培训题 BATCH-10-034 的标准答案是什么？", "bucket": "编号检索", "file": "客服培训材料_第10批.md", "anchor": "BATCH-10-034", "kind": "unique_id_lookup"}
+{"query": "杭州区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_杭州.md", "anchor": "杭州区域上门安装服务费为 199 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "南京区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_南京.md", "anchor": "南京区域上门安装服务费为 219 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "苏州区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_苏州.md", "anchor": "苏州区域上门安装服务费为 239 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "宁波区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_宁波.md", "anchor": "宁波区域上门安装服务费为 259 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "合肥区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_合肥.md", "anchor": "合肥区域上门安装服务费为 279 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "无锡区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_无锡.md", "anchor": "无锡区域上门安装服务费为 299 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "常州区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_常州.md", "anchor": "常州区域上门安装服务费为 319 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "绍兴区域上门安装服务费是多少钱？", "bucket": "编号检索", "file": "安装作业指导书_绍兴.md", "anchor": "绍兴区域上门安装服务费为 339 元，超出 20 公里的部分按每公里 3 元另计。", "kind": "same_fact_cross_region"}
+{"query": "版本 A 的延保是多长时间、多少钱？", "bucket": "编号检索", "file": "延保服务说明_版本A.docx", "anchor": "版本 A 提供的延保时长为 12 个月，价格为 299 元。", "kind": "same_fact_cross_version"}
+{"query": "版本 B 的延保是多长时间、多少钱？", "bucket": "编号检索", "file": "延保服务说明_版本B.docx", "anchor": "版本 B 提供的延保时长为 24 个月，价格为 399 元。", "kind": "same_fact_cross_version"}
+{"query": "版本 C 的延保是多长时间、多少钱？", "bucket": "编号检索", "file": "延保服务说明_版本C.docx", "anchor": "版本 C 提供的延保时长为 36 个月，价格为 499 元。", "kind": "same_fact_cross_version"}
+{"query": "版本 D 的延保是多长时间、多少钱？", "bucket": "编号检索", "file": "延保服务说明_版本D.docx", "anchor": "版本 D 提供的延保时长为 48 个月，价格为 599 元。", "kind": "same_fact_cross_version"}
+{"query": "版本 E 的延保是多长时间、多少钱？", "bucket": "编号检索", "file": "延保服务说明_版本E.docx", "anchor": "版本 E 提供的延保时长为 60 个月，价格为 699 元。", "kind": "same_fact_cross_version"}
+{"query": "版本 F 的延保是多长时间、多少钱？", "bucket": "编号检索", "file": "延保服务说明_版本F.docx", "anchor": "版本 F 提供的延保时长为 72 个月，价格为 799 元。", "kind": "same_fact_cross_version"}
+{"query": "云枢 S3 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3_产品手册.pdf", "anchor": "云枢 S3 智能音箱整机保修期为 12 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3_参数表.xlsx", "anchor": "| S3 | 499 |", "kind": "distractor_family"}
+{"query": "云枢 S3 Pro 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3 Pro_产品手册.pdf", "anchor": "云枢 S3 Pro 智能音箱整机保修期为 18 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 Pro 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3 Pro_参数表.xlsx", "anchor": "| S3 Pro | 699 |", "kind": "distractor_family"}
+{"query": "云枢 S3 Max 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3 Max_产品手册.pdf", "anchor": "云枢 S3 Max 智能音箱整机保修期为 24 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 Max 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3 Max_参数表.xlsx", "anchor": "| S3 Max | 899 |", "kind": "distractor_family"}
+{"query": "云枢 S3 Lite 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3 Lite_产品手册.pdf", "anchor": "云枢 S3 Lite 智能音箱整机保修期为 30 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 Lite 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3 Lite_参数表.xlsx", "anchor": "| S3 Lite | 1099 |", "kind": "distractor_family"}
+{"query": "云枢 S3 mini 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3 mini_产品手册.pdf", "anchor": "云枢 S3 mini 智能音箱整机保修期为 36 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 mini 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3 mini_参数表.xlsx", "anchor": "| S3 mini | 1299 |", "kind": "distractor_family"}
+{"query": "云枢 S3 Plus 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3 Plus_产品手册.pdf", "anchor": "云枢 S3 Plus 智能音箱整机保修期为 42 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 Plus 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3 Plus_参数表.xlsx", "anchor": "| S3 Plus | 1499 |", "kind": "distractor_family"}
+{"query": "云枢 S3 SE 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3 SE_产品手册.pdf", "anchor": "云枢 S3 SE 智能音箱整机保修期为 48 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 SE 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3 SE_参数表.xlsx", "anchor": "| S3 SE | 1699 |", "kind": "distractor_family"}
+{"query": "云枢 S3 Ultra 音箱的保修期是多久？", "bucket": "编号检索", "file": "云枢S3 Ultra_产品手册.pdf", "anchor": "云枢 S3 Ultra 智能音箱整机保修期为 54 个月。", "kind": "distractor_family"}
+{"query": "云枢 S3 Ultra 的售价是多少元？", "bucket": "编号检索", "file": "云枢S3 Ultra_参数表.xlsx", "anchor": "| S3 Ultra | 1899 |", "kind": "distractor_family"}
+{"query": "编号 SN-3300 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_应急供电.pdf", "anchor": "SN-3300", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3301 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_安装孔位.pdf", "anchor": "SN-3301", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3302 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_电池更换.pdf", "anchor": "SN-3302", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3303 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_网关配对.pdf", "anchor": "SN-3303", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3304 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_固件升级.pdf", "anchor": "SN-3304", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3305 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_防撬报警.pdf", "anchor": "SN-3305", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3306 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_临时密码.pdf", "anchor": "SN-3306", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3307 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_门磁校准.pdf", "anchor": "SN-3307", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3308 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_指纹录入.pdf", "anchor": "SN-3308", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3309 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_远程开锁.pdf", "anchor": "SN-3309", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3310 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_报警静音.pdf", "anchor": "SN-3310", "kind": "ocr_sentinel"}
+{"query": "编号 SN-3311 的说明是关于什么的？", "bucket": "编号检索", "file": "扫描件说明_低电提醒.pdf", "anchor": "SN-3311", "kind": "ocr_sentinel"}
+{"query": "运费相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_运费.docx", "anchor": "补充说明 1：涉及运费的争议，以签收后 7 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "赠品相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_赠品.docx", "anchor": "补充说明 2：涉及赠品的争议，以签收后 9 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "发票相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_发票.docx", "anchor": "补充说明 3：涉及发票的争议，以签收后 11 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "上门改约相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_上门改约.docx", "anchor": "补充说明 4：涉及上门改约的争议，以签收后 13 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "二次维修相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_二次维修.docx", "anchor": "补充说明 5：涉及二次维修的争议，以签收后 15 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "安装返工相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_安装返工.docx", "anchor": "补充说明 6：涉及安装返工的争议，以签收后 17 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "备件补发相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_备件补发.docx", "anchor": "补充说明 7：涉及备件补发的争议，以签收后 19 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "运费险相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_运费险.docx", "anchor": "补充说明 8：涉及运费险的争议，以签收后 21 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "延保转移相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_延保转移.docx", "anchor": "补充说明 9：涉及延保转移的争议，以签收后 23 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "上门检测相关的争议要在签收后多少天内提出？", "bucket": "编号检索", "file": "政策补充说明_上门检测.docx", "anchor": "补充说明 10：涉及上门检测的争议，以签收后 25 天内提出的申请为准。", "kind": "same_fact_cross_doc"}
+{"query": "投诉案例 CASE-1-001 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第1辑.md", "anchor": "CASE-1-001", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-2-014 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第2辑.md", "anchor": "CASE-2-014", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-3-027 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第3辑.md", "anchor": "CASE-3-027", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-4-040 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第4辑.md", "anchor": "CASE-4-040", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-5-013 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第5辑.md", "anchor": "CASE-5-013", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-6-026 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第6辑.md", "anchor": "CASE-6-026", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-7-039 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第7辑.md", "anchor": "CASE-7-039", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-8-012 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第8辑.md", "anchor": "CASE-8-012", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-9-025 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第9辑.md", "anchor": "CASE-9-025", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-10-038 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第10辑.md", "anchor": "CASE-10-038", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-11-011 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第11辑.md", "anchor": "CASE-11-011", "kind": "unique_id_lookup"}
+{"query": "投诉案例 CASE-12-024 的处理结论是什么？", "bucket": "编号检索", "file": "投诉案例集_第12辑.md", "anchor": "CASE-12-024", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-1-01 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第1套.md", "anchor": "EXAM-1-01", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-2-08 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第2套.md", "anchor": "EXAM-2-08", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-3-15 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第3套.md", "anchor": "EXAM-3-15", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-4-22 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第4套.md", "anchor": "EXAM-4-22", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-5-29 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第5套.md", "anchor": "EXAM-5-29", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-6-06 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第6套.md", "anchor": "EXAM-6-06", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-7-13 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第7套.md", "anchor": "EXAM-7-13", "kind": "unique_id_lookup"}
+{"query": "试题 EXAM-8-20 考的是什么内容？", "bucket": "编号检索", "file": "培训试题_第8套.md", "anchor": "EXAM-8-20", "kind": "unique_id_lookup"}
+{"query": "第 1 版网点清单里杭州服务中心的覆盖半径是多少公里？", "bucket": "编号检索", "file": "服务网点清单_第1版.xlsx", "anchor": "| 杭州 | 杭州服务中心 |", "kind": "cross_doc_lookup"}
+{"query": "第 2 版网点清单里宁波服务中心的覆盖半径是多少公里？", "bucket": "编号检索", "file": "服务网点清单_第2版.xlsx", "anchor": "| 宁波 | 宁波服务中心 |", "kind": "cross_doc_lookup"}
+{"query": "第 3 版网点清单里常州服务中心的覆盖半径是多少公里？", "bucket": "编号检索", "file": "服务网点清单_第3版.xlsx", "anchor": "| 常州 | 常州服务中心 |", "kind": "cross_doc_lookup"}
+{"query": "第 4 版网点清单里杭州服务中心的覆盖半径是多少公里？", "bucket": "编号检索", "file": "服务网点清单_第4版.xlsx", "anchor": "| 杭州 | 杭州服务中心 |", "kind": "cross_doc_lookup"}
+{"query": "第 5 版网点清单里宁波服务中心的覆盖半径是多少公里？", "bucket": "编号检索", "file": "服务网点清单_第5版.xlsx", "anchor": "| 宁波 | 宁波服务中心 |", "kind": "cross_doc_lookup"}
+{"query": "第 6 版网点清单里常州服务中心的覆盖半径是多少公里？", "bucket": "编号检索", "file": "服务网点清单_第6版.xlsx", "anchor": "| 常州 | 常州服务中心 |", "kind": "cross_doc_lookup"}
+{"query": "工单 WO-2599-0001 的处理时长是多少小时？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "编号不存在，应说明资料不足而不是硬召回"}
+{"query": "工单 WO-2501-9999 的处理时长是多少小时？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "编号不存在，应说明资料不足而不是硬召回"}
+{"query": "云枢 S9 Ultimate 音箱的保修期是多久？", "bucket": "负样本", "file": null, "anchor": null, "kind": "refusal", "expect": "该型号不存在（只有 S3 系列），强干扰负样本"}

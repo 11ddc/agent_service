@@ -16,12 +16,13 @@ import jieba
 import pytesseract
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
-from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.documents import Document
 
 # from langchain_text_splitters import RecursiveCharacterTextSplitter
 from PIL import Image
 from rank_bm25 import BM25Okapi
+
+from config import CHROMA_COLLECTION, CHROMA_SPACE  # 顺带在最早期设置 HF_ENDPOINT
 
 # 父块存储（MySQL）。注意 db 包在 import 时不连库、不 import 驱动，
 # 所以 MySQL 挂着也不会影响本模块启动
@@ -31,6 +32,7 @@ from db import (
     parent_store,
 )
 from rag import structure as st
+from rag.local_embedding import get_embeddings
 from rag.local_reranker import LocalReranker
 from rag.structure import (
     CHUNK_SCHEMA_VER,
@@ -193,7 +195,9 @@ def _load_pdf(file_path: str) -> list[Section]:
         )
         page_texts.append(content)
         page_images.append(find_image_references(content))
-        page_numbers.append(int(chunk.get("metadata", {}).get("page_number") or index + 1))
+        page_numbers.append(
+            int(chunk.get("metadata", {}).get("page_number") or index + 1)
+        )
 
     if PDF_DROP_REPEATED_LINES:
         page_texts, dropped = st.drop_repeated_lines(page_texts)
@@ -310,7 +314,6 @@ def _ocr_image_section(
         atomic=True,
         kind="image",
     )
-
 
 
 def _load_txt(file_path: str) -> list[Section]:
@@ -871,7 +874,7 @@ def init_rag(file_path: str) -> int:
     """
     try:
         return _init_rag(file_path)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"[入库] {file_path} 失败: {e!r}")
         _record_document(file_path, 0, 0, error=f"入库失败: {type(e).__name__}: {e}")
         raise
@@ -906,15 +909,14 @@ def _init_rag(file_path: str) -> int:
     # ① 父块 → MySQL（先父后子）
     _save_parents(file_path, parents)
 
-    # ② 子块 → Chroma
-    embeddings = DashScopeEmbeddings(
-        model="text-embedding-v2", dashscope_api_key=os.getenv("QIANWEN_API_KEY")
-    )
-
+    # ② 子块 → Chroma（embedding 由 config 决定：本地模型或云端 DashScope）
+    # 注意：换 embedding 模型 = 换向量空间（维度也不同），必须同时换集合名并全量重建，
+    #       否则要么报维度错，要么两种向量混在一起 —— 后者不报错，只是结果全错。
     store = Chroma(
-        embedding_function=embeddings,
+        embedding_function=get_embeddings(),
         persist_directory=str(PERSIST_DIR),
-        collection_name="knowledge_base",
+        collection_name=CHROMA_COLLECTION,
+        collection_metadata={"hnsw:space": CHROMA_SPACE},
     )
 
     # 按文件来源去重：同一个文件重新上传时要覆盖旧块。
@@ -976,14 +978,11 @@ def _ensure_ready() -> None:
         if _vectorstore is not None:
             return
         try:
-            embeddings = DashScopeEmbeddings(
-                model="text-embedding-v2",
-                dashscope_api_key=os.getenv("QIANWEN_API_KEY"),
-            )
             store = Chroma(
-                embedding_function=embeddings,
+                embedding_function=get_embeddings(),
                 persist_directory=str(PERSIST_DIR),
-                collection_name="knowledge_base",
+                collection_name=CHROMA_COLLECTION,
+                collection_metadata={"hnsw:space": CHROMA_SPACE},
             )
             _vectorstore = store
             # 数据库转为检索器
@@ -1251,12 +1250,10 @@ def get_status() -> dict:
     """
     try:
         store = Chroma(
-            embedding_function=DashScopeEmbeddings(
-                model="text-embedding-v2",
-                dashscope_api_key=os.getenv("QIANWEN_API_KEY"),
-            ),
+            embedding_function=get_embeddings(),
             persist_directory=str(PERSIST_DIR),
-            collection_name="knowledge_base",
+            collection_name=CHROMA_COLLECTION,
+            collection_metadata={"hnsw:space": CHROMA_SPACE},
         )
         print("知识库状态embedding模型")
         count = store._collection.count()

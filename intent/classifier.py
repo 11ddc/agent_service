@@ -9,13 +9,13 @@
 """
 
 import json
+import logging
 import math
 import os
 import re
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
@@ -25,18 +25,29 @@ from intent.examples import (
     INTENT_EXAMPLES,
     RULE_PATTERNS,
 )
-from intent.schemas import IntentName, IntentOutput, IntentResult
+from intent.schemas import IntentName, IntentOutput, IntentReason, IntentResult
+from rag.local_embedding import get_embeddings  # 与检索侧共用同一个 embedding 实例
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
+
+logger = logging.getLogger(__name__)
 
 # ── 可调阈值（B/C 级）────────────────────────────────────
 EMBED_HIGH_THRESHOLD = 0.60  # embedding 最高分超过它且拉开差距 → 直接判定
 EMBED_LOW_THRESHOLD = 0.45  # 最高分低于它 → 视为 out_of_scope（省一次 LLM 调用）
 EMBED_MARGIN = 0.05  # 与第二名的分数差下限
 LLM_CONFIDENCE_THRESHOLD = 0.60  # LLM 仲裁置信度下限，低于它 → ambiguous
+# C 级是同步阻塞调用，必须有上限：不设时限时 SDK 默认 600s + 2 次重试，
+# 一次网络抖动就会把用户请求挂住几分钟（图跑在线程池里，事件循环不会死，
+# 但那个用户一直在等）。
+LLM_TIMEOUT_SECONDS = float(os.getenv("INTENT_LLM_TIMEOUT", "12"))
+LLM_MAX_RETRIES = int(os.getenv("INTENT_LLM_MAX_RETRIES", "1"))
 
 # 示例向量缓存：改了 intent/examples.py 里的 INTENT_EXAMPLES 后请 +1
-CACHE_VERSION = 2
+# v3：embedding 从云端 DashScope text-embedding-v2（1536 维）换成本地
+#     bge-small-zh-v1.5（512 维）—— 旧缓存是 1536 维向量，必须失效，
+#     否则要么维度不匹配报错，要么相似度全错（静默劣化）。
+CACHE_VERSION = 3
 CACHE_FILE = Path(__file__).resolve().parent / "example_embeddings.json"
 
 # ── 规则编译 ─────────────────────────────────────────────
@@ -75,10 +86,8 @@ def rule_classify(query: str) -> tuple[IntentName | None, str]:
 # ==================== B 级：Embedding 分类 ====================
 class EmbeddingClassifier:
     def __init__(self):
-        self._embeddings = DashScopeEmbeddings(
-            model="text-embedding-v2",
-            dashscope_api_key=os.getenv("QIANWEN_API_KEY"),
-        )
+        # 与 RAG 检索侧共用同一个 embedding 实现（进程内单例，读写同源）
+        self._embeddings = get_embeddings()
         # {IntentName: List[向量]}
         self._vectors: dict[IntentName, list[list[float]]] = {}
         self._load_or_build()
@@ -205,6 +214,8 @@ class LLMClassifier:
             base_url="https://api.deepseek.com/v1",
             api_key=os.getenv("DEEPSEEK_API_KEY"),
             temperature=0,  # 分类任务要确定性
+            timeout=LLM_TIMEOUT_SECONDS,  # 同步节点必须限时
+            max_retries=LLM_MAX_RETRIES,
         )
         self._prompt = ChatPromptTemplate.from_messages(
             [
@@ -223,7 +234,7 @@ class LLMClassifier:
             # print(f"llm：", chain.invoke({"query": query}))
             return chain.invoke({"query": query})
         except Exception as e:
-            print(f"LLM json-mode 意图仲裁失败，尝试 function calling: {e}")
+            logger.info("LLM json-mode 意图仲裁失败，改走 function calling: %s", e)
         # 方式二：function calling 兜底
         chain = self._prompt | self._llm.with_structured_output(IntentOutput)
         return chain.invoke({"query": query})
@@ -237,56 +248,76 @@ class IntentClassifier:
 
     def classify(self, query: str) -> IntentResult:
         query = (query or "").strip()
+        # 空问题 → 用显式 reason 标记，而不是靠 confidence == 0 当哨兵
         if not query or not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", query):
             return IntentResult(
-                intent=IntentName.AMBIGUOUS, confidence=0, method="rule"
+                intent=IntentName.AMBIGUOUS,
+                confidence=0,
+                method="rule",
+                reason=IntentReason.EMPTY,
             )
 
         # rule_classify规则匹配
         intent, effective = rule_classify(query)
-        # print(f"规则匹配的意图：",intent)
         if intent is not None:
             return IntentResult(intent=intent, confidence=1.0, method="rule")
 
-        # embedding拿到意图（或者没有），最高相似度以及相似度列表
-        intent, score, scores = self._embed.classify(effective or query)
-        # print(f"embbding意图：",intent)
+        effective_query = effective or query
+
+        # ── B 级：embedding ──
+        # B 级不可用（超时/欠费/key 缺失/模型未就绪）不能让整个漏斗失效：
+        # 早期这里异常会一路穿到 intent_router_node，被它的 except 吞掉后
+        # intent_result=None → 所有问题都走 agent_flow，RAG 整条路被静默绕过。
+        # 现在降级到 C 级 LLM 仲裁，只把原因记下来。
+        embed_failed = False
+        scores: dict[str, float] = {}
+        try:
+            intent, score, scores = self._embed.classify(effective_query)
+        except Exception as e:
+            embed_failed = True
+            intent = None
+            logger.warning("意图 embedding 分层不可用，降级到 LLM 仲裁: %s", e)
 
         if intent is not None:
             return IntentResult(
                 intent=intent, confidence=score, method="embedding", scores=scores
             )
 
-        # LLM 仲裁（此时 embedding 结果歧义）
+        # ── C 级：LLM 仲裁（embedding 歧义，或 B 级不可用）──
         try:
-            out = self._llm.classify(effective or query)
-            # print(f"llm输出:",out)
-
-            # llm自己的置信度
-            if out.confidence >= LLM_CONFIDENCE_THRESHOLD:
-                return IntentResult(
-                    intent=out.intent,
-                    confidence=out.confidence,
-                    method="llm",
-                    slots=out.slots,
-                    scores=scores,
-                )
-            # LLM 自己也拿不准 → ambiguous（上层降级走默认 RAG）
-            return IntentResult(
-                intent=IntentName.AMBIGUOUS,
-                confidence=out.confidence,
-                method="llm",
-                slots=out.slots,
-                scores=scores,
-            )
+            out = self._llm.classify(effective_query)
         except Exception as e:
-            print(f"LLM 意图仲裁失败，降级为 ambiguous: {e}")
+            logger.warning("LLM 意图仲裁失败: %s", e)
             return IntentResult(
                 intent=IntentName.AMBIGUOUS,
                 confidence=0,
                 method="llm",
                 scores=scores,
+                reason=(
+                    IntentReason.EMBEDDING_ERROR
+                    if embed_failed
+                    else IntentReason.LLM_ERROR
+                ),
             )
+
+        # llm自己的置信度
+        if out.confidence >= LLM_CONFIDENCE_THRESHOLD:
+            return IntentResult(
+                intent=out.intent,
+                confidence=out.confidence,
+                method="llm",
+                slots=out.slots,
+                scores=scores,
+            )
+        # LLM 自己也拿不准 → ambiguous（上层降级走默认 RAG）
+        return IntentResult(
+            intent=IntentName.AMBIGUOUS,
+            confidence=out.confidence,
+            method="llm",
+            slots=out.slots,
+            scores=scores,
+            reason=IntentReason.LOW_CONFIDENCE,
+        )
 
 
 # ── 模块级单例 + 对外入口 ────────────────────────────────

@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
@@ -13,16 +14,18 @@ from agent.langchina import agent
 from context_budget import input_budget
 from intent.classifier import classify
 from intent.problemdecomposition import split_questions
-from intent.schemas import IntentName, IntentResult
+from intent.schemas import IntentName, IntentReason, IntentResult
 from mcp_client import call_mcp_tool
 from query_rewrite.history import get_history
 from query_rewrite.rewriter import rewrite_query
 from rag.generatellm import RAGGenerator
 from rag.rag import KnowledgeBaseError, get_status, reordering, retrieve_sync
 
+logger = logging.getLogger(__name__)
+
 # ── MCP 接入点②（新增）：外部 MCP 工具桥，见 tools_agent/mcp_client.py
 # from tools_agent import mcp_client
-from tools_agent.tool_llm import add, call_zhipu_chat, searchOrder
+from tools_agent.tool_llm import call_zhipu_chat
 
 # ── 非知识库意图的短路回复话术 ────────────────────────────
 SHORT_CIRCUIT_REPLIES = {
@@ -63,9 +66,13 @@ def rewrite_node(state: AgentState) -> dict:
         return {"question": question}
     # 返回会话历史
     history = get_history(session_id)
-    print(f"会话历史: {history}")
+    # 历史原文只放 DEBUG：INFO 级别下每轮都打印整段对话既吵又涉及用户隐私
+    logger.debug("会话历史 %d 条: %s", len(history), history)
 
-    return {"question": rewrite_query(question, history)}
+    rewritten = rewrite_query(question, history)
+    if rewritten != question:
+        logger.info("本轮问题已改写: %r", rewritten)
+    return {"question": rewritten}
 
 
 def splitter_node(state: AgentState) -> dict:
@@ -84,19 +91,37 @@ def route_after_split(state: AgentState) -> str:
 
 
 def intent_router_node(state: AgentState) -> dict:
-    """意图识别节点：三级漏斗（规则→Embedding→LLM）；失败置 None 交给兜底。"""
+    """意图识别节点：三级漏斗（规则→Embedding→LLM）；失败置 error 结果交给兜底。"""
     try:
         result = classify(state["question"])
-        print(f"三级漏斗进来的意图识别：{result.intent}")
     except Exception as e:
-        print(f"意图识别失败：{e}")
-        result = None
+        # 分类器整体不可用（单层失败已在 classify 内部降级，走到这里说明更严重）
+        logger.warning("意图识别异常，交 Agent 兜底: %s", e)
+        result = IntentResult(
+            intent=IntentName.AMBIGUOUS,
+            confidence=0.0,
+            method="error",
+            reason=IntentReason.LLM_ERROR,
+        )
+    else:
+        logger.info(
+            "意图识别: intent=%s method=%s conf=%.3f reason=%s",
+            result.intent.value,
+            result.method,
+            result.confidence,
+            result.reason.value if result.reason else "-",
+        )
     return {"intent_result": result}
 
 
 # 根据意图返回对应状态
 def route_by_intent(state: AgentState) -> str:
-    """路由器：读 intent_result 决定下一个节点（对应原 _handle_intent 分支）。"""
+    """路由器：读 intent_result 决定下一个节点（对应原 _handle_intent 分支）。
+
+    注意只看 reason 判断"空问题"：以前用 confidence == 0 代替，而 LLM 仲裁
+    失败时 confidence 也是 0，于是真实问题会被当成空问题回一句
+    "我没收到您的问题"。现在失败/低置信一律走 agent_flow 兜底。
+    """
     result = state.get("intent_result")
     if result is None:
         return "agent_flow"  # 识别失败 → Agent 兜底
@@ -104,9 +129,9 @@ def route_by_intent(state: AgentState) -> str:
     if intent == IntentName.TOOL_CALL:
         return "tool_agent"
     if intent == IntentName.AMBIGUOUS:
-        if result.confidence == 0:
+        if result.reason == IntentReason.EMPTY:
             return "short_circuit"  # 空问题
-        return "agent_flow"  # 意图模糊 → LLM 兜底
+        return "agent_flow"  # 意图模糊 / 分类器不可用 → LLM 兜底
     if intent == IntentName.KB_QUESTION:
         return "rag_flow"  # 知识库问答 → RAG
     return "short_circuit"  # chitchat / handoff / out_of_scope / status
@@ -141,24 +166,23 @@ def tool_call_node(state: AgentState) -> dict:
                 result = f"[MCP 工具执行失败: {e!s}]"
             tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
 
-        elif tool_name == "searchOrder":
-            # 从参数中提取 query（session_id 由系统注入）
-            query_arg = tool_args.get("query")
-            result = searchOrder.invoke(
-                {"query": query_arg, "session_id": state.get("session_id")}
-            )
-            tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
-
-        elif tool_name == "add":
-            query_arg = tool_args.get("query")
-            result = add.invoke(
-                {"query": query_arg, "session_id": state.get("session_id")}
-            )
+        elif tool_name in ("searchOrder", "add"):
+            # ⚠️ 这两个是占位工具（tools_agent/tool_llm.py 里没有真实实现），已从喂给
+            # 模型的 tools 列表里摘掉；这里再兜一层 —— 即使被误调用，也绝不返回假数据。
+            # 以前 searchOrder 返回 "搜索成功，您的订单为。。。。。。。。。。。。"，
+            # 模型会据此编出一段语气自信的订单状态回答，用户完全看不出是编的。
+            result = f"[{tool_name} 暂不支持：订单查询尚未接入真实订单系统]"
             tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
 
         else:
-            # 处理未知工具（可忽略或报错）
+            # 未知工具**必须回一条 ToolMessage**，不能只 print 就当没事：
+            # tool_continue 判的是"最后一条消息有没有 tool_calls"，如果这里什么都不追加，
+            # 最后一条仍是那条带 tool_calls 的 AIMessage → tool_call → llm_call →
+            # tool_call …，**无限循环**。回一条"不可用"让模型自己收尾。
             print(f"未知工具：{tool_name}，忽略")
+            tool_messages.append(
+                ToolMessage(content=f"[工具 {tool_name} 不可用]", tool_call_id=tool_id)
+            )
 
     return {"messages": tool_messages}
 
@@ -252,7 +276,7 @@ def short_circuit_node(state: AgentState) -> dict:
             else "知识库尚未初始化，请先上传文档。"
         )
         return {"answer": text}
-    if intent == IntentName.AMBIGUOUS and result and result.confidence == 0:
+    if intent == IntentName.AMBIGUOUS and result and result.reason == IntentReason.EMPTY:
         return {"answer": "您好，我没收到您的问题，请重新输入您想查询的内容。"}
     return {
         "answer": SHORT_CIRCUIT_REPLIES.get(intent, "抱歉，我暂时无法回答这个问题。")
@@ -331,6 +355,9 @@ def merge_node(state: AgentState) -> dict:
             "method": result.method,
             "confidence": round(result.confidence, 4),
         }
+        if result.reason is not None:
+            # 兜底原因（空问题/低置信/分类器不可用）：便于线上回答"为什么走了兜底"
+            meta["reason"] = result.reason.value
         slots = result.slots
         if slots is not None and (slots.source or slots.keyword or slots.time_range):
             meta["slots"] = slots.model_dump()

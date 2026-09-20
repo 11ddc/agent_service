@@ -1,0 +1,33 @@
+// RAG 检索层评测集：30 条（25 条正样本 + 5 条负样本）
+// 字段：query 问题 | bucket 分桶 | file 答案所在文件 | anchor 锚点句（必须是该文件 chunk 里的原文子串）
+// 锚点句的意义：只用文件名判定时，11.docx 一个文件占 39/53 块，命中任意一块就算对 → 召回率虚高
+{"query": "天穹 Z9 筋膜枪支持几档力度调节？", "bucket": "原词", "file": "z9_manual.txt", "anchor": "支持 4 档力度调节"}
+{"query": "Z9 的市场零售价是多少？", "bucket": "原词", "file": "z9_manual.txt", "anchor": "市场零售价:2999 元"}
+{"query": "以旧换新的话旧机最高能抵多少钱？", "bucket": "原词", "file": "z9_manual.txt", "anchor": "旧机最高可抵 300 元"}
+{"query": "客服合规性原则里绝对禁用的词有哪些？", "bucket": "原词", "file": "CustomerServiceManual.txt", "anchor": "绝对禁用“最便宜”"}
+{"query": "付款后多久发货？", "bucket": "原词", "file": "CustomerServiceManual.txt", "anchor": "付款后48小时内火速发货"}
+{"query": "客服首响要控制在几秒内？", "bucket": "原词", "file": "CustomerServiceManual.txt", "anchor": "首响控制在5秒内"}
+{"query": "售后工单处理表有多少行数据？", "bucket": "原词", "file": "11.docx", "anchor": "| 售后工单处理表 | 100行 |"}
+{"query": "客服对话记录表里 first_response_time 字段是什么意思？", "bucket": "原词", "file": "11.docx", "anchor": "| first_response_time | INT | 首次响应时长（秒） | 12 |"}
+{"query": "质检评分明细表的 greeting_score 字段是什么？", "bucket": "原词", "file": "11.docx", "anchor": "| greeting_score | INT | 问候语规范性（10分） | 9 |"}
+{"query": "售后工单表的 processing_time 字段单位是什么？", "bucket": "原词", "file": "11.docx", "anchor": "| processing_time | INT | 处理耗时（小时） | 28 |"}
+{"query": "你们家的筋膜枪到底有几个档位可以选？", "bucket": "口语改写", "file": "z9_manual.txt", "anchor": "支持 4 档力度调节"}
+{"query": "东西收到发现有质量问题怎么处理？", "bucket": "口语改写", "file": "CustomerServiceManual.txt", "anchor": "额外申请一张10元无门槛券作为歉意"}
+{"query": "我想退货，来回的运费谁承担？", "bucket": "口语改写", "file": "CustomerServiceManual.txt", "anchor": "寄回运费需您先行垫付"}
+{"query": "快递好几天都不更新物流信息，怎么办？", "bucket": "口语改写", "file": "CustomerServiceManual.txt", "anchor": "物流超过5天未更新"}
+{"query": "客户发火骂人了，客服第一句该怎么安抚？", "bucket": "口语改写", "file": "CustomerServiceManual.txt", "anchor": "我非常理解您的心情"}
+{"query": "哪些话属于广告法不让说的？", "bucket": "口语改写", "file": "CustomerServiceManual.txt", "anchor": "绝对禁用“最便宜”"}
+{"query": "客户说要投诉到媒体平台，客服该怎么办？", "bucket": "口语改写", "file": "CustomerServiceManual.txt", "anchor": "5分钟内上报客服主管"}
+{"query": "这套数据里哪些指标能看出客服一次就把问题解决的比例？", "bucket": "口语改写", "file": "11.docx", "anchor": "| resolution_rate | DECIMAL(5,2) | 一次解决率（%） | 82.50 |"}
+{"query": "想知道客服这个月拿多少绩效奖金，看哪个字段？", "bucket": "口语改写", "file": "11.docx", "anchor": "| bonus_amount | DECIMAL(8,2) | 绩效奖金（元） | 2,500.00 |"}
+{"query": "客户打低分一般是因为什么原因？", "bucket": "口语改写", "file": "11.docx", "anchor": "| dissatisfaction_reason | VARCHAR(50) | 不满意原因（≤3分时） |"}
+{"query": "Z9 Pro 的零售价和保修期分别是多少？", "bucket": "跨文档", "file": "z9_params.docx", "anchor": "| Z9 Pro | 3999 | 24个月 |"}
+{"query": "英文说明书里这个产品的保修期是多久？", "bucket": "跨文档", "file": "z9_manual.pdf", "anchor": "warranty 24 months"}
+{"query": "退货的时候运费险会怎么赔？", "bucket": "跨文档", "file": "z9_check_upload.txt", "anchor": "运费险说明:退货时可自动理赔"}
+{"query": "这批客服数据一共覆盖了几天、每天大概多少通会话？", "bucket": "跨文档", "file": "11.docx", "anchor": "覆盖8个自然日（8月1日-8日）"}
+{"query": "售后工单平均要处理多久？升级到二级以上的多不多？", "bucket": "跨文档", "file": "11.docx", "anchor": "平均处理耗时约32小时"}
+{"query": "今天上海的天气怎么样？", "bucket": "负样本", "file": null, "anchor": null}
+{"query": "帮我写一段 Python 冒泡排序的代码", "bucket": "负样本", "file": null, "anchor": null}
+{"query": "推荐几部好看的科幻电影", "bucket": "负样本", "file": null, "anchor": null}
+{"query": "现在比特币的价格是多少？", "bucket": "负样本", "file": null, "anchor": null}
+{"query": "帮我订一张明天去北京的高铁票", "bucket": "负样本", "file": null, "anchor": null}

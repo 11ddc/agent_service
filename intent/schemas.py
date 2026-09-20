@@ -30,6 +30,20 @@ class IntentName(str, Enum):
     AMBIGUOUS = "ambiguous"  # 意图模糊。（如果是空问题则置信度为0 ，另一种情况llm都拿不准（置信度低于写死的置信度））
 
 
+class IntentReason(str, Enum):
+    """兜底原因：区分"问题为空"与"分类器自身不可用"。
+
+    历史坑：以前两种情况都用 confidence == 0 表示，于是 LLM 仲裁一失败
+    （异常分支同样把 confidence 置 0），真实问题会被回一句
+    "您好，我没收到您的问题"（见 agent/graph.py 的 route_by_intent）。
+    """
+
+    EMPTY = "empty"  # 空问题 / 无有效字符
+    LOW_CONFIDENCE = "low_confidence"  # LLM 自己也不确定
+    LLM_ERROR = "llm_error"  # LLM 仲裁调用失败（异常/超时）
+    EMBEDDING_ERROR = "embedding_error"  # embedding 分层不可用（已降级到 LLM）
+
+
 class IntentSlots(BaseModel):
     """槽位：从 query 中抽取的结构化信息（LLM 仲裁时顺带抽取，可选）"""
 
@@ -52,8 +66,10 @@ class IntentResult:
 
     intent: IntentName
     confidence: float = 1.0
-    method: str = "rule"  # rule / embedding / llm
+    method: str = "rule"  # rule / embedding / llm / error
     slots: IntentSlots = field(default_factory=IntentSlots)
     scores: dict = field(
         default_factory=dict
     )  # 仅调试用：embedding 阶段各意图最高相似度
+    # 兜底原因（None = 正常判定）。路由只看 reason，不再看 confidence == 0
+    reason: IntentReason | None = None

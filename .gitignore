@@ -15,28 +15,32 @@ __pycache__/
 .Python
 resume-output
 *.log
+# 数据文件：忽略文件本身，**不要**用裸目录名 `db` —— db/ 是被 rag/rag.py
+# 顶层 import 的源码包，裸规则会让它整个进不了版本库（clone 下来直接 ImportError）。
 *.db
 *.sqlite3
-db
 .env.local
 .env.*.local
-tests
-eval
+# 测试套件与它的配置**必须入库**：裸目录名 `tests` 曾把 243 个用例整个排除。
+# 需要忽略的是跑测试的产物，不是用例本身：
+.pytest_cache/
 .vscode/
 .idea/
-pytest.ini
-
+embbding_models
 *.tmp
 .DS_Store
 
-# RAG 评测：**脚本文档标注集要提交**，只有跑出来的产物不入库。
-# （原来这里是一条裸的 `eval`，把整个目录都忽略了，于是这条注释本身就是假的：
-#   脚本、标注集、README 全都没进版本库。）
-# eval/ 下要提交：retrieval_recall.py、README.md、queries.jsonl、gen/、golden/
+# RAG 评测：**脚本与标注集要提交**，只有跑出来的产物不入库。
+# ⚠️ 教训：这段之前是一条裸的 `eval`，它把整个目录先排除了，于是下面这些精确
+#    规则**永不生效**（gitignore 语义：父目录被排除后无法用 `!` 反包含其子文件
+#    —— 所以只能删掉那条裸规则，光加负向规则没用）。裸规则现已删除，本段生效。
+# 要提交：retrieval_recall.py、ingest_corpus.py、parse_check.py、README.md、
+#         queries.jsonl、gen/、golden/
 eval/cache/
 eval/_chunks.json
-eval/detail.csv
-eval/misses.md
+# 产物名会带实验后缀（detail_local_L.csv / misses_legacy1548.md …），用通配覆盖
+eval/detail*.csv
+eval/misses*.md
 # 生成物：语料本体与报告都可由 seed 复现，不入库（生成器与 golden 入库）
 eval/corpus/
 eval/reports/
