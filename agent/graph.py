@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # ── MCP 接入点②（新增）：外部 MCP 工具桥，见 tools_agent/mcp_client.py
 # from tools_agent import mcp_client
-from tools_agent.tool_llm import call_zhipu_chat
+from tools_agent.tool_llm import LOCAL_TOOL_MAP, call_zhipu_chat
 
 # ── 非知识库意图的短路回复话术 ────────────────────────────
 SHORT_CIRCUIT_REPLIES = {
@@ -138,6 +138,11 @@ def route_by_intent(state: AgentState) -> str:
 
 
 # 工具调用
+def _as_text(result: object) -> str:
+    """工具的返回值不保证是 str（可能返回 dict / 数字），而 ToolMessage 只吃 str。"""
+    return result if isinstance(result, str) else str(result)
+
+
 def tool_call_node(state: AgentState) -> dict:
     last_msg = state["messages"][-1]
 
@@ -165,6 +170,20 @@ def tool_call_node(state: AgentState) -> dict:
                 print(f"MCP 工具调用失败: {e}")
                 result = f"[MCP 工具执行失败: {e!s}]"
             tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
+
+        elif tool_name in LOCAL_TOOL_MAP:
+            # 本地工具**统一分派**：只要工具进了 tool_llm._LOCAL_TOOLS 就自动可用。
+            # 以前这里是两个硬编码的 elif（searchOrder / add），新增一个工具就得
+            # 回来改一遍 —— 漏改的后果是工具被当成"未知工具"、模型永远调不动。
+            try:
+                result = LOCAL_TOOL_MAP[tool_name].invoke(tool_args)
+            except Exception as e:  # noqa: BLE001
+                # 工具失败要回填错误、而不是中断链路：模型看到失败原因还能换个说法
+                print(f"本地工具调用失败 {tool_name}: {e}")
+                result = f"[工具 {tool_name} 执行失败: {e!s}]"
+            tool_messages.append(
+                ToolMessage(content=_as_text(result), tool_call_id=tool_id)
+            )
 
         elif tool_name in ("searchOrder", "add"):
             # ⚠️ 这两个是占位工具（tools_agent/tool_llm.py 里没有真实实现），已从喂给

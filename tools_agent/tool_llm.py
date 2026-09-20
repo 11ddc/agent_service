@@ -10,6 +10,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from openai import OpenAI
 
 from mcp_client import get_mcp_tools_definition
+from tools_agent.kb_tools import KB_TOOLS
 
 # 有这个才能进env文件读取内容
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
@@ -74,13 +75,20 @@ def add(query: str, session_id: str) -> int:
 
 # 暴露给模型的**本地**工具列表：只放有真实实现的工具。
 # 上面两个占位工具刻意不在这里 —— 它们的存在曾让用户拿到编造的订单答案。
-_LOCAL_TOOLS: list = []
+# 现在放的是 tools_agent/kb_tools.py 里那套基于真实数据的知识库工具
+# （全库检索 / 限定文档检索 / 文档清单 / 章节概览）。
+_LOCAL_TOOLS: list = list(KB_TOOLS)
 
 tools = [
     # 将 langchain 工具转换为 openai 工具，方便llm调用
     convert_to_openai_tool(t)
     for t in _LOCAL_TOOLS
 ]
+
+# 工具名 → 工具对象：供 agent/graph.py 的 tool_call_node **统一分派**。
+# 有了它，新增工具只要进 _LOCAL_TOOLS 就自动可被调用，
+# 不必再去 tool_call_node 里加一个 elif（那正是它以前只有两个硬编码分支的原因）。
+LOCAL_TOOL_MAP: dict = {t.name: t for t in _LOCAL_TOOLS}
 
 
 def call_zhipu_chat(messages: list):

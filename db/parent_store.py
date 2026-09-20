@@ -79,3 +79,22 @@ def count() -> int:
         cur.execute("SELECT COUNT(*) FROM parents")
         row = cur.fetchone()
         return int(row[0]) if row else 0
+
+
+def outline(doc_id: str, limit: int = 200) -> list[str]:
+    """该文档出现过的章节路径（breadcrumb），按文档内顺序去重。
+
+    用途：回答"这份文档讲了什么"。breadcrumb 记的本来就是章节路径，去重后
+    就是一份天然目录 —— 不需要额外维护一套目录结构。
+
+    用 MIN(order_idx) 排序而不是字母序：目录必须按文档里的真实先后排列，
+    否则"第10章"会排到"第2章"前面。
+    """
+    with mysql_cursor() as cur:
+        cur.execute(
+            "SELECT breadcrumb FROM parents "
+            "WHERE doc_id = %s AND breadcrumb IS NOT NULL AND breadcrumb <> '' "
+            "GROUP BY breadcrumb ORDER BY MIN(order_idx) LIMIT %s",
+            (doc_id, limit),
+        )
+        return [row[0] for row in cur.fetchall()]
