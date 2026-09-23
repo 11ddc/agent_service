@@ -90,9 +90,18 @@ class LocalEmbeddings(Embeddings):
         """文档侧：**不加**指令前缀。"""
         return self._encode(list(texts))
 
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """查询侧批量版：与 embed_query 同前缀，但只过一次 encode。
+
+        用途：意图分类要拿"用户会怎么问"的示例向量跟用户问题比（见
+        intent/classifier.py）——示例属于查询侧，必须带同一个指令前缀。
+        几十条示例逐条 embed_query 会把固定开销乘上条数，批量走一趟即可。
+        """
+        return self._encode([self.query_prefix + (t or "") for t in texts])
+
     def embed_query(self, text: str) -> list[float]:
         """查询侧：加指令前缀（bge-zh 系列要求；bge-m3 留空即可）。"""
-        return self._encode([self.query_prefix + (text or "")])[0]
+        return self.embed_queries([text])[0]
 
     @property
     def dimension(self) -> int:

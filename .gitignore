@@ -21,6 +21,11 @@ resume-output
 *.sqlite3
 .env.local
 .env.*.local
+# 模板**必须入库**，否则别人 clone 下来不知道要配哪些变量。
+# 这条负向规则是防御性的：万一以后有人把上面几行改成 `.env*` 通配，
+# 没有它模板会被一起排除掉（gitignore 里父规则排除后无法用 ! 反包含子文件，
+# 但同级的 `.env` / `.env.example` 之间没有父子关系，所以这条能正常生效）。
+!.env.example
 # 测试套件与它的配置**必须入库**：裸目录名 `tests` 曾把 243 个用例整个排除。
 # 需要忽略的是跑测试的产物，不是用例本身：
 .pytest_cache/
@@ -46,3 +51,8 @@ eval/corpus/
 eval/reports/
 eval/run-*.json
 11.docx
+
+# 本地调试脚本（`_diag_*.py`：直接打 127.0.0.1:8000 的一次性诊断脚本）。
+# 它们不属于项目代码，`git add .` 时很容易被顺手推上 GitHub。
+# 如果你确实想把这些脚本一起入库，删掉这一条即可。
+_diag_*.py

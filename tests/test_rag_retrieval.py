@@ -195,6 +195,9 @@ def test_reordering_empty_or_single_skips_reranker(monkeypatch):
         def rerank(self, *a, **k):
             raise AssertionError("空/单文档不应触发重排模型")
 
+        def rerank_scored(self, *a, **k):
+            raise AssertionError("空/单文档不应触发重排模型")
+
     monkeypatch.setattr(rag, "reranker", _NeverCalled())
 
     assert rag.reordering("q", []) == []
@@ -210,9 +213,10 @@ def test_reordering_uses_rerank_order_and_backfills_original_objects(monkeypatch
         def __init__(self):
             self.calls = []
 
-        def rerank(self, query, docs, top_n):
-            self.calls.append((query, len(docs), top_n))
-            return [docs[2], docs[0], docs[1]]  # 按 C,A,B 排
+        def rerank_scored(self, query, docs):
+            self.calls.append((query, len(docs)))
+            # 按 C,A,B 排，分数都远高于相对下限，不该被筛掉
+            return [(docs[2], 0.9), (docs[0], 0.8), (docs[1], 0.7)]
 
     fake = _FakeReranker()
     monkeypatch.setattr(rag, "reranker", fake)
@@ -222,18 +226,20 @@ def test_reordering_uses_rerank_order_and_backfills_original_objects(monkeypatch
     assert [d.page_content for d in out] == ["C", "A", "B"]
     # 回填的是原对象,元数据不丢
     assert out[1] is d1
-    assert fake.calls == [("q", 3, rag.TOP_N)]
+    # 打分要覆盖**全部候选**：多样性筛选要在完整候选里挑，不能先截断再挑
+    assert fake.calls == [("q", 3)]
 
 
 def test_reordering_truncates_to_top_n(monkeypatch):
-    docs = [_doc(f"d{i}") for i in range(6)]
+    # 每块来自不同文件：本用例只验证 TOP_N 截断，同源限流交给下一个用例
+    docs = [_doc(f"d{i}", f"f{i}.txt") for i in range(6)]
     # 显式钉住 TOP_N：原来这个测试写死了 rag.TOP_N 的当前值，
     # TOP_N 从 4 调到 10 之后断言就自相矛盾了（len==TOP_N 与期望列表长度冲突）
     monkeypatch.setattr(rag, "TOP_N", 4)
 
     class _FakeReranker:
-        def rerank(self, query, docs, top_n):
-            return list(reversed(docs))
+        def rerank_scored(self, query, docs):
+            return [(d, 0.5) for d in reversed(docs)]
 
     monkeypatch.setattr(rag, "reranker", _FakeReranker())
 
@@ -243,11 +249,35 @@ def test_reordering_truncates_to_top_n(monkeypatch):
     assert [d.page_content for d in out] == ["d5", "d4", "d3", "d2"]
 
 
+def test_select_diverse_caps_per_source_and_drops_low_scores():
+    """同源限流 + 相对分数下限 —— 这次"上下文被同源近重复块灌满"的回归锁。
+
+    真实事故：问"音箱连不上 WiFi 怎么排查？"时，同一个 xlsx 的 18 个近重复块
+    分数挤在 0.60~0.674，把 TOP_N 全占满；真正写着排查原则的那块排第 19 名
+    （0.092）永远进不了上下文 → 模型只能答"根据现有资料无法回答"。
+    """
+    same_file = [(Document(page_content=f"表{i}", metadata={"source": "排查.xlsx"}), 0.67 - i * 0.001) for i in range(8)]
+    other = [(Document(page_content="排查原则", metadata={"source": "手册.md"}), 0.092)]
+    junk = [(Document(page_content="无关", metadata={"source": "变更记录.md"}), 0.0)]
+
+    kept = rag._select_diverse(same_file + other + junk, top_n=10)
+
+    assert [d.page_content for d in kept] == ["表0", "表1", "表2", "排查原则"]  # 同源只留 3 块
+    assert all(d.page_content != "无关" for d in kept)  # 低于 12% 的不再凑数
+
+
+def test_select_diverse_keeps_everything_when_scores_are_unbounded():
+    """最高分 <= 0（无界 logit 的 reranker）时不能启用相对下限，否则会把候选全砍光。"""
+    pairs = [(Document(page_content=f"d{i}", metadata={"source": f"f{i}.txt"}), -0.5 - i) for i in range(4)]
+
+    assert len(rag._select_diverse(pairs, top_n=10)) == 4
+
+
 def test_reordering_degrades_to_original_order_on_error(monkeypatch):
     d1, d2 = _doc("A"), _doc("B")
 
     class _BadReranker:
-        def rerank(self, *a, **k):
+        def rerank_scored(self, *a, **k):
             raise RuntimeError("模型加载失败")
 
     monkeypatch.setattr(rag, "reranker", _BadReranker())

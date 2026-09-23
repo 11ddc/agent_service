@@ -22,6 +22,7 @@ from langchain_core.documents import Document
 from PIL import Image
 from rank_bm25 import BM25Okapi
 
+import config
 from config import CHROMA_COLLECTION, CHROMA_SPACE  # 顺带在最早期设置 HF_ENDPOINT
 
 # 父块存储（MySQL）。注意 db 包在 import 时不连库、不 import 驱动，
@@ -44,7 +45,13 @@ from rag.vision_ocr import hybrid_image_text
 # import chromadb.api.shared_system_client as shared
 # shared.SharedSystemClient._identifier_to_system.clear()
 # import pymupdf4llm
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+#
+# tesseract 路径以前硬编码成 r"C:\Program Files\Tesseract-OCR\tesseract.exe"：
+# 别人 clone 到 Linux/macOS 上会指向一个不存在的文件，OCR 静默全废。
+# 现在由 config 解析（TESSERACT_CMD > Windows 默认装法 > 留给 pytesseract 走 PATH），
+# 只有真的解析出路径时才覆盖，否则保持 pytesseract 自己的查找逻辑。
+if config.TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
@@ -99,6 +106,18 @@ PARENT_TOP_N = 8
 
 # 送进上下文的父块总字符预算：装不下的跳过，继续试后面的（不是遇到就停）
 PARENT_MAX_CHARS = 6000
+
+# ── 上下文多样性（重排之后、父块展开之前的筛选）──────────────
+# 重排只按分数排序，不管"这块是不是跟前面那块重复"。一份文件被切成几百块时，
+# 同源近重复块分数挤在一起、把 TOP_N 全占满，其它来源的补充信息全被挤出窗口。
+# 实测（"音箱连不上 WiFi 怎么排查？"）：
+#   重排前 18 名全部来自同一个 xlsx 的填充表（0.60~0.674），
+#   TOP_N=10 → 上下文 8 块全同源（4867 字全是同一种 6 行表格）；
+#   而真正写着"先断电重启，再逐项排查硬件"的那块排第 19 名（0.092）→ 永远进不来，
+#   模型只能如实回一句"根据现有资料无法回答"。
+PER_SOURCE_TOP_N = 3  # 同一个文件最多保留几块
+MIN_SCORE_RATIO = 0.12  # 低于"最高分 × 这个比例"的不再往下凑数
+
 
 # PDF 页眉页脚去噪开关。长 PDF 每页都印着公司名/页码，
 # 几百页就是几百份重复文本，同时污染 BM25 和向量两路检索
@@ -1410,9 +1429,54 @@ def _expand_to_parents(children: list[Document]) -> list[Document]:
     return expanded
 
 
+def _source_key(doc: Document) -> str:
+    """同一份文件的身份键：优先 source 路径，退而求其次用 doc_id/面包屑。"""
+    meta = doc.metadata or {}
+    return str(meta.get("source") or meta.get("doc_id") or meta.get("breadcrumb") or "?")
+
+
+def _select_diverse(pairs: list[tuple[Document, float]], top_n: int) -> list[Document]:
+    """从"已按相关性降序"的候选里挑出真正要送进 LLM 的那几块。
+
+    两条规则（都只做减法，不改变相关性排序本身）：
+      1. **同源限流**：同一个文件最多 PER_SOURCE_TOP_N 块。一份文件切成几百块时，
+         同源近重复块会把其它来源的补充信息整段挤出窗口；
+      2. **相对分数下限**：低于"最高分 × MIN_SCORE_RATIO"的块不再往下凑数。
+         与其拿 score≈0 的无关块把上下文填满，不如让它短一点、干净一点。
+
+    为什么用相对分而不是绝对分：交叉编码器的分数量纲跟模型绑定（换 reranker
+    就全变），而"分数只有最高分的 12%"这个关系是跨模型稳定的。
+    最高分 <= 0 时（某些 reranker 输出无界 logit）不启用下限，避免把候选全砍光。
+
+    上限之所以敢设这么低：留下的每个子块随后都会被 _expand_to_parents 还原成
+    **整节**（含标题/表头/上下文），一块带回来的信息远不止它自己那几百字。
+
+    入参已是降序（由 reranker 保证），返回长度 <= top_n。
+    """
+    if not pairs:
+        return []
+
+    top_score = pairs[0][1]
+    floor = top_score * MIN_SCORE_RATIO if top_score > 0 else None
+
+    kept: list[Document] = []
+    per_source: dict[str, int] = {}
+    for doc, score in pairs:
+        if len(kept) >= top_n:
+            break
+        if floor is not None and score < floor:
+            continue  # 降序排列，后面只会更低；这里 continue 而不 break，不依赖排序假设
+        key = _source_key(doc)
+        if per_source.get(key, 0) >= PER_SOURCE_TOP_N:
+            continue
+        per_source[key] = per_source.get(key, 0) + 1
+        kept.append(doc)
+    return kept
+
+
 # 调用本地重排序模型
 def reordering(query: str, docs: list[Document]) -> list[Document]:
-    """重排 + 父块聚合（small-to-big 的入口）。
+    """重排 + 多样性筛选 + 父块聚合（small-to-big 的入口）。
 
     **顺序很关键：先重排子块，再展开成父块。** 反过来的话（先聚合成父块再重排）
     打分的对象就变成大块，回到"语义被稀释"的老问题，重排精度会明显下降。
@@ -1431,22 +1495,27 @@ def reordering(query: str, docs: list[Document]) -> list[Document]:
 
     try:
         # 懒加载：reranker 内部首次调用时才加载模型，后续直接复用
-        result = reranker.rerank(query, docs, TOP_N)
+        # 打分**不打折**：rerank_scored 对全部候选打分（rerank 内部本来也是全打分
+        # 再截断），所以"多拿候选做多样性筛选"不会多花一次前向
+        scored = reranker.rerank_scored(query, docs)
 
         # 回填元数据（页码/面包屑注脚等）
-        # 注意：要遍历 rerank 的返回值 result（重排后的文档列表），
-        # 而不是 reranker 实例本身——后者不可迭代，会抛 TypeError 走降级分支
-        # local_reranker 目前返回的就是原 Document 对象、metadata 天然保留，
-        # 这里按 child_id 回填是为了防它将来改成重建对象
+        # 注意：要遍历 rerank 的返回值（重排后的文档列表），而不是 reranker 实例本身
+        # ——后者不可迭代，会抛 TypeError 走降级分支。local_reranker 目前返回的就是
+        # 原 Document 对象、metadata 天然保留，这里按 child_id 回填是为了防它将来改成重建对象
         orig_map = {_doc_key(d): d for d in docs}
-        reranked = [orig_map.get(_doc_key(d), d) for d in result][:TOP_N]
+        pairs = [(orig_map.get(_doc_key(d), d), s) for d, s in scored]
+
+        # 先按"相关性 + 不重复"选出 TOP_N 块，再去做父块展开
+        reranked = _select_diverse(pairs, TOP_N)
     except Exception as e:
         # 打印完整堆栈，避免静默吞错后重排悄悄失效
         import traceback
 
         traceback.print_exc()
         print(f"重排失败，降级为 RRF 默认顺序: {e}")
-        reranked = docs[:TOP_N]  # RRF 顺序本身就是按相关性排的
+        # 降级路径拿不到分数，只按原顺序取 TOP_N（RRF 顺序本身就是按相关性排的）
+        reranked = docs[:TOP_N]
 
-        # _expand_to_parents 按praent_id去重，查MySQL取父块全文，按预算截断
+    # _expand_to_parents 按 parent_id 去重，查 MySQL 取父块全文，按预算截断
     return _expand_to_parents(reranked)

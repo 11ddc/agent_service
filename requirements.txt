@@ -1,31 +1,65 @@
-langchain
-langchain-core
-langchain-chroma
-langchain-community
-langchain-text-splitters
-langgraph
-langgraph-checkpoint
-langgraph-prebuilt
-langgraph-sdk
+# 智能客服问答 API —— 运行依赖
+#
+# 安装：
+#     python -m venv venv
+#     venv\Scripts\python.exe -m pip install -r requirements.txt   # Windows
+#     venv/bin/python -m pip install -r requirements.txt           # Linux / macOS
+#
+# ⚠️ 只装这一份就够跑起服务 + 跑通测试。之前这份文件漏了 4 个"代码里真的 import 了、
+#    但不在清单里"的包（redis / httpx / pytest / tiktoken），
+#    全新环境按旧清单装完，`import api.chat` 会直接 ModuleNotFoundError: redis。
+#    pyproject.toml 与这份清单现在保持一致。
+
+# ── 编排与 LLM ─────────────────────────────────────────────
+langchain>=1.3.15
+langchain-core>=1.5.4
+langchain-community>=0.4.2
+langchain-openai>=1.5.0
+langchain-text-splitters>=1.1.2
+langgraph>=1.2.11
+langgraph-checkpoint>=4.2.0
+langgraph-prebuilt>=1.1.0
+langgraph-sdk>=0.4.2
+openai>=2.0
+
+# ── Web 服务 ───────────────────────────────────────────────
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+sse-starlette>=2.0
+
+# ── 检索层 ─────────────────────────────────────────────────
+langchain-chroma>=0.2
+chromadb>=1.0
+rank-bm25>=0.2.2
+jieba>=0.42.1
+# sentence-transformers 会连带装 torch（默认 CPU 版）。
+# 想用 GPU：先按 https://pytorch.org 装对应 CUDA 版 torch，再装本文件。
+sentence-transformers>=3.0
+
+# ── 文档解析（上传入库用）────────────────────────────────────
+pymupdf>=1.24             # rag/rag.py 直接 import pymupdf 做扫描页渲染
+pymupdf4llm>=0.0.17
+python-docx>=1.1.0
+openpyxl>=3.1.0
+pytesseract>=0.3.10       # Python 包装；系统还需另装 tesseract 可执行文件（见 README）
+pillow>=10.0
+
+# ── 存储与云服务 ───────────────────────────────────────────
+PyMySQL>=1.1.0            # MySQL 父块存储
+redis>=5.0                # 会话历史 + 转人工计数窗口（redis_client.py / query_rewrite/history.py）
+httpx>=0.27               # eval/ingest_corpus.py 走真实 HTTP 接口批量入库
+
+# ── 配置 / 工具 ────────────────────────────────────────────
+python-dotenv>=1.0
+
+# ── MCP 外部工具接入 ───────────────────────────────────────
 mcp>=1.2
 fastmcp>=2.0
-chromadb
-fastapi
-uvicorn[standard]
-python-multipart
-langchain-openai
-pymupdf4llm
-python-docx
-openpyxl
-python-dotenv
-sse-starlette
-dashscope
-rank-bm25
-jieba
-sentence-transformers
-# 父块存储：rag.py 依赖 db/ 包，db.mysql 需要 PyMySQL 驱动
-PyMySQL
-# 以下两个是 rag.py 顶层就 import 的依赖，之前漏在 requirements.txt 外面 ——
-# 全新环境按本文件安装会直接 import 失败
-pytesseract
-pillow
+
+# ── 开发 / 测试（跑 pytest 必需；不跑测试可以不要）──────────
+pytest>=8.0
+
+# ── 选装 ───────────────────────────────────────────────────
+# 装上后上下文预算是精确 token 计数；不装则退化为字符粗估（不影响功能，见 context_budget.py）
+tiktoken>=0.7

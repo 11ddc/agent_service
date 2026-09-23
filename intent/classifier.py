@@ -34,8 +34,14 @@ logger = logging.getLogger(__name__)
 
 # ── 可调阈值（B/C 级）────────────────────────────────────
 EMBED_HIGH_THRESHOLD = 0.60  # embedding 最高分超过它且拉开差距 → 直接判定
-EMBED_LOW_THRESHOLD = 0.45  # 最高分低于它 → 视为 out_of_scope（省一次 LLM 调用）
 EMBED_MARGIN = 0.05  # 与第二名的分数差下限
+# 刻意**不再有**"最低分阈值"。原实现是 `top_score < 0.45 → out_of_scope`：
+# 把"跟示例集都不像"当成了"超出业务范围"，而示例集只覆盖退换货/发票这类语境，
+# 结果库里真正的业务问题（岚盾 L1/L2 参数价格、云枢 S3、上门安装、故障排查）
+# 被整批挡在门外 —— 实测 eval/golden 的 174 条金标问题里 125 条被判 out_of_scope，
+# 前端看到的就是一句"抱歉，这个问题超出了我的服务范围"。
+# 现在低分/平局一律返回 None 转 C 级 LLM 仲裁：分低只能说明示例集没覆盖，
+# 是不是"跟业务无关"必须看语义，那是 LLM 的活。
 LLM_CONFIDENCE_THRESHOLD = 0.60  # LLM 仲裁置信度下限，低于它 → ambiguous
 # C 级是同步阻塞调用，必须有上限：不设时限时 SDK 默认 600s + 2 次重试，
 # 一次网络抖动就会把用户请求挂住几分钟（图跑在线程池里，事件循环不会死，
@@ -47,7 +53,11 @@ LLM_MAX_RETRIES = int(os.getenv("INTENT_LLM_MAX_RETRIES", "1"))
 # v3：embedding 从云端 DashScope text-embedding-v2（1536 维）换成本地
 #     bge-small-zh-v1.5（512 维）—— 旧缓存是 1536 维向量，必须失效，
 #     否则要么维度不匹配报错，要么相似度全错（静默劣化）。
-CACHE_VERSION = 3
+# v4：KB_QUESTION 补入真实产品域示例（岚盾/云枢 S3/上门安装/故障排查/价格问法），
+#     且示例向量从**文档侧**编码（无前缀）改为**查询侧**编码（带 bge 指令前缀）。
+#     两条都必须让缓存失效：示例集变了要重算，编码方式变了更要重算 ——
+#     否则缓存里存的还是旧分布下的向量，分数会继续被压低。
+CACHE_VERSION = 4
 CACHE_FILE = Path(__file__).resolve().parent / "example_embeddings.json"
 
 # ── 规则编译 ─────────────────────────────────────────────
@@ -115,10 +125,21 @@ class EmbeddingClassifier:
             except Exception as e:
                 print(f"意图示例向量缓存读取失败，将重新生成: {e}")
 
-        # print(f"意图示例向量：请求 embedding API（{count} 条示例）...")
-
-        # 计算需要写入的向量
-        vectors = self._embeddings.embed_documents(all_examples)
+        # 计算需要写入的向量。
+        # ⚠️ 必须按**查询侧**编码（bge-zh 要求查询加指令前缀、文档不加）：
+        # INTENT_EXAMPLES 里存的是"用户会怎么问"，它和真实用户问题属于同一侧；
+        # 原来走 embed_documents（文档侧、无前缀），两类向量落在不同分布上，
+        # 相似度被整体压低且**不报错**（典型的静默劣化）：
+        # "岚盾 L3 零售价是多少？"对标"产品的零售价是多少钱"只有 0.62，
+        # 卡在 0.60+0.05 的门槛边上 —— 金标集 174 条里能直判的只有 46 条。
+        # 换成同侧编码后直判 74 条，且**没有一条是高置信判错**。
+        embed_queries = getattr(self._embeddings, "embed_queries", None)
+        vectors = (
+            embed_queries(all_examples)  # 批量，省掉逐条调用的固定开销
+            if embed_queries is not None
+            # 其它 provider（如 DashScope）查询/文档本来就同分布，逐条也没有副作用
+            else [self._embeddings.embed_query(e) for e in all_examples]
+        )
 
         grouped: dict[str, list[list[float]]] = {}
         idx = 0
@@ -140,7 +161,12 @@ class EmbeddingClassifier:
     def classify(self, query: str) -> tuple[IntentName | None, float, dict[str, float]]:
         """
         返回 (意图 or None, 最高分, 各意图最高相似度)。
-        None 表示歧义 → 交给 C 级 LLM 仲裁。
+
+        判定规则只有一条：**最高分够高、且跟第二名拉开差距**，才敢按示例集下结论；
+        其余情况（分低 / 咬得紧）一律返回 None → 交给 C 级 LLM 仲裁。
+
+        注意这里没有"低分 = out_of_scope"这条捷径（曾经有过，代价见模块顶部的注释）：
+        语料是长尾的，示例集覆盖不到的问法会拿低分，但那恰恰是真实提问。
         """
         # 将问题向量化
         q_vec = self._embeddings.embed_query(query)
@@ -169,12 +195,13 @@ class EmbeddingClassifier:
                 top_score,
                 {k.value: round(v, 4) for k, v in scores.items()},
             )
-        if top_score < EMBED_LOW_THRESHOLD:
-            return (
-                IntentName.OUT_OF_SCOPE,
-                top_score,
-                {k.value: round(v, 4) for k, v in scores.items()},
-            )
+        # 剩下两种情况都交给 C 级 LLM 仲裁，**都不要在这里下结论**：
+        #   1. 最高分不高（示例集没覆盖这种问法）；
+        #   2. 第一第二名咬得很紧（连"最像哪个意图"都算不上）。
+        # 尤其是"最高分很低"时绝不能返回 out_of_scope：示例集永远不可能穷举
+        # 业务问法，用一条绝对分数线去判定"超范围"，误杀的全是真实提问。
+        # 反例（曾经真的发生）："云枢S3 Pro 支持哪些连接协议？" 最高分 0.339，
+        # 五个意图里 kb_question 已经是最高的那个，却被这条线判成了超范围。
         return None, top_score, {k.value: round(v, 4) for k, v in scores.items()}
 
     # 计算余弦相似度 越接近1越相似
@@ -189,11 +216,16 @@ class EmbeddingClassifier:
 # ==================== C 级：LLM 仲裁 ====================
 _LLM_SYSTEM_PROMPT = """你是意图识别器，判断用户问题属于哪个意图，并抽取槽位。只能从以下 5 个意图中选择一个：
 
-1. kb_question：用户询问知识库/业务相关内容（产品、售后、规则、流程、政策等），需要查资料回答。
+1. kb_question：用户询问知识库/业务相关内容，需要查资料回答。凡是**产品、参数、价格、保修/延保、安装、售后政策、退换货、发票、物流、故障排查/报错码、备件、门店网点**这类问题，哪怕只是问一个型号或一个名词，都算 kb_question。
 2. chitchat：寒暄、闲聊、问候、感谢、告别、自我介绍类问题。
 3. status_query：询问知识库本身的状态（有什么文档、多少资料、是否初始化）。
 4. human_handoff：要求转人工、投诉、举报、找真人处理。
 5. out_of_scope：与业务无关、知识库也无法回答的问题（写诗、闲聊天气、编程、翻译等）。
+
+判 out_of_scope 要谨慎：只有在问题**明显不属于上面任何业务范畴**时才选它。
+只要问题是在问某份资料里的信息（哪怕只报了一个编号/型号/单据号，例如"XX-001 的处理结果是什么"），
+就选 kb_question —— **"库里到底有没有"由检索层负责**，不是意图识别该拦的事。
+拿不准是 kb_question 还是 out_of_scope 时，选 kb_question（查不到会如实告知，比误拒答好）。
 
 同时从问题中抽取槽位（可选）：
 - source：用户明确提到的文件名/文档名，如"客服手册"
