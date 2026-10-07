@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import threading
+import time as _time
 from functools import partial
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from rank_bm25 import BM25Okapi
 
 import config
 from config import CHROMA_COLLECTION, CHROMA_SPACE  # 顺带在最早期设置 HF_ENDPOINT
+from metrics import retrieval_latency, retrieval_results
 from rag import acl as rag_acl  # 文档级访问控制：检索的两条通道都必须过滤
 
 # 父块存储（MySQL）。注意 db 包在 import 时不连库、不 import 驱动，
@@ -1257,6 +1259,7 @@ async def retrieve(query: str, k: int = TOP_K) -> list[Document]:
     # 融合前每路多取一些，融合后再砍到 k
     # 粗筛，先筛选相近语义数量较多 然后在tpk
     fetch_k = max(k * 2, 6)
+    _started_at = _time.perf_counter()
 
     # 两路召回：异步并行执行
     # 语义相似度搜索
@@ -1288,16 +1291,27 @@ async def retrieve(query: str, k: int = TOP_K) -> list[Document]:
     dense_ok = not isinstance(dense_docs, BaseException)
     sparse_ok = not isinstance(sparse_docs, BaseException)
     if not dense_ok:
-        print(f"向量检索失败，降级为仅关键词检索: {dense_docs}")
+        logger.warning("向量检索失败，降级为仅关键词检索: %s", dense_docs)
         dense_docs = []
     if not sparse_ok:
-        print(f"BM25 检索失败，降级为仅向量检索: {sparse_docs}")
+        logger.warning("BM25 检索失败，降级为仅向量检索: %s", sparse_docs)
         sparse_docs = []
 
+    # 两条通道各自的成败要分别打点：只看"检索命中率"无法区分
+    # "库里没内容"和"某一路挂了、结果被砍半"
+    for channel, ok, docs_of_channel in (
+        ("dense", dense_ok, dense_docs),
+        ("sparse", sparse_ok, sparse_docs),
+    ):
+        outcome = "degraded" if not ok else ("hit" if docs_of_channel else "empty")
+        retrieval_results().inc(channel=channel, outcome=outcome)
+
     docs = _rrf_fuse(dense_docs, sparse_docs, top_n=k)
+    retrieval_results().inc(channel="fused", outcome="hit" if docs else "empty")
+    retrieval_latency().observe(_time.perf_counter() - _started_at, channel="hybrid")
     if not docs:
         return []
-    print("RRF融合成功：", docs)
+    logger.debug("RRF 融合得到 %d 块", len(docs))
     return docs
 
 

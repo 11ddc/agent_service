@@ -195,3 +195,17 @@ ACL_DEFAULT_VISIBILITY = (
 # true（企业默认）：上传 → draft（检索不到）→ 审核发布 → published
 # false（本地图省事）：上传即 published
 ACL_REQUIRE_APPROVAL = _env_bool("ACL_REQUIRE_APPROVAL", True)
+
+# ════════════════════════════════════════════════════════════
+# 可观测性
+# ════════════════════════════════════════════════════════════
+LOG_LEVEL = (os.getenv("LOG_LEVEL") or "INFO").strip().upper()
+
+# 应用版本：/health 与 OpenAPI 文档都用它，避免版本号散落各处（此前
+# main.py 写 1.0.0、pyproject 写 0.1.0，两边对不上）
+APP_VERSION = (os.getenv("APP_VERSION") or "0.2.0").strip()
+
+# /metrics 是否要求管理员身份。默认要求 —— 指标会暴露业务量级
+# （咨询量、转人工率、成本），不该对匿名访问者开放。
+# 集群内用 Prometheus 抓取时：要么配 bearer token，要么设成 0 并只在内部网暴露。
+METRICS_REQUIRE_AUTH = _env_bool("METRICS_REQUIRE_AUTH", True)

@@ -119,22 +119,17 @@ preflight()
 import uvicorn  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 
+import config  # noqa: E402
 from body_limit import add_body_limit  # noqa: E402
 from cors import setup_cors  # noqa: E402
+from observability import add_observability, setup_logging  # noqa: E402
 from router.router import register_routers  # noqa: E402
 
-# 日志：改写 / 意图识别 / 路由 里的"降级、兜底、被拒"关键路径都用 logging 记录。
-# 不配置 basicConfig 时 root 没有 handler，INFO 会被直接丢掉（只有 print 可见），
-# 所以统一在应用入口配一次。
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
-# 第三方库的 INFO 太吵，压到 WARNING：
-# openai SDK 3.x 基于 httpx2（注意不是 httpx），每个请求都会打一行
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpx2").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+# 日志：统一走 observability.setup_logging —— 它装的是**带 request_id** 的单行
+# key=value 格式，并顺手把第三方库压到 WARNING。
+# 不配置 handler 时 root 没有 handler，INFO 会被直接丢掉（只有 print 可见），
+# 所以必须在应用入口配一次。
+setup_logging()
 
 # from agent.graph import graph
 # from ag_ui_langgraph import add_langgraph_fastapi_endpoint
@@ -142,7 +137,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # Redis 客户端统一在 redis_client.py 里管理（模块级单例，全局共享）
 
 # 创建 FastAPI 应用实例
-app = FastAPI(title="我的智能问答系统 API", version="1.0.0")
+app = FastAPI(title="我的智能问答系统 API", version=config.APP_VERSION)
 
 # 1. 请求体上限：必须在 multipart 解析**之前**生效，否则超限请求会先被完整
 #    缓冲到内存/临时盘才拿到 413（详见 body_limit.py）
@@ -154,7 +149,11 @@ add_body_limit(app)
 #    浏览器会把前端看到的错误变成 CORS 报错而不是 413。
 setup_cors(app)
 
-# 3. 将注册封装好的路由，以函数的形式挂载到 FastAPI 实例上
+# 3. 可观测性放**最外层**：这样连"请求体超限""JSON 解析失败"这类早期返回
+#    也会被记进访问日志与指标；否则它们在观测层之内，会变成监控盲区。
+add_observability(app)
+
+# 4. 将注册封装好的路由，以函数的形式挂载到 FastAPI 实例上
 register_routers(app)
 
 #

@@ -18,6 +18,7 @@ from agent.graph import (  # LangGraph 编排图（拆分→意图→路由→�
 )
 from auth.deps import Principal, require_user
 from intent.examples import HANDOFF_RE
+from metrics import chat_outcomes, handoff_events
 from query_rewrite import aappend_history
 from rag import acl as rag_acl
 from redis_client import redis_client
@@ -115,6 +116,9 @@ async def chat(request: ChatRequest, principal: Principal = Depends(require_user
     session_key = _session_key(principal, request.session_id)
     logger.info("收到 /chat 请求 user=%s session=%s", principal.user_id, session_key)
 
+    # 请求结果（恰好记一次）：ok / fallback / error
+    outcome = "ok"
+
     # 转人工检测：先于一切执行，但只附加提示、不短路主流程；
     # Redis 异常时静默降级，聊天照常（不影响当前聊天接口）
     handoff_msg = None
@@ -166,22 +170,29 @@ async def chat(request: ChatRequest, principal: Principal = Depends(require_user
         # 这里必须留痕：走到这条分支意味着整张编排图挂了，用户拿到的是 Agent
         # 单问单答（没有检索、没有拆分）。以前是 print，INFO 级日志里查不到。
         logger.warning("编排图执行失败，降级直连 Agent: %s", e)
+        chat_outcomes().inc(outcome="error")
         # agent_node 是同步阻塞调用（内部发网络请求），必须丢线程池，否则卡住事件循环
-        answer = await asyncio.to_thread(
-            _answer_by_agent, request.question, request.session_id
-        )
+        # ⚠️ 传 `session_key`（带身份命名空间）而不是原始 session_id：
+        #    兜底 Agent 的 checkpointer 是按 thread_id 存消息的，
+        #    传客户端可控的原值就等于"两个客户端用了同一个 session_id 就能共享 Agent 记忆"。
+        answer = await asyncio.to_thread(_answer_by_agent, request.question, session_key)
         meta = {"intent": "unknown", "method": "fallback"}
+        outcome = "error"
 
     # 与旧逻辑对齐：多问题全部检索为空时，用原问题整体兜底给 Agent
     if not answer:
         logger.warning("编排图执行结果为空，降级直连 Agent")
-        answer = await asyncio.to_thread(
-            _answer_by_agent, request.question, request.session_id
-        )
+        answer = await asyncio.to_thread(_answer_by_agent, request.question, session_key)
         meta = {"intent": "unknown", "method": "fallback"}
+        outcome = "fallback"
 
     if handoff_msg:
         answer = f"{answer}\n\n{handoff_msg}" if answer else handoff_msg
+        handoff_events().inc()
+
+    # 每个请求恰好记一次结果：这是"兜底率/转人工率"这类核心指标的数据源
+    chat_outcomes().inc(outcome=outcome)
+
     # 异步写入历史会话消息
     # 这里使用的是 主线程的事件循环 即main里面的run
     await aappend_history(session_key, request.question, answer)
