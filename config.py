@@ -209,3 +209,22 @@ APP_VERSION = (os.getenv("APP_VERSION") or "0.2.0").strip()
 # （咨询量、转人工率、成本），不该对匿名访问者开放。
 # 集群内用 Prometheus 抓取时：要么配 bearer token，要么设成 0 并只在内部网暴露。
 METRICS_REQUIRE_AUTH = _env_bool("METRICS_REQUIRE_AUTH", True)
+
+# ════════════════════════════════════════════════════════════
+# 内容审核与日志脱敏
+#
+# 两件事分开：**违规内容拦截**（黑名单/外部服务）与 **PII 脱敏**（日志/审计）。
+# 客服场景里用户主动给手机号、订单号是正常的，把 PII 当违规拦掉会把最需要
+# 人工帮助的用户挡在门外。
+# ════════════════════════════════════════════════════════════
+MODERATION_ENABLED = _env_bool("MODERATION_ENABLED", True)
+# rule（离线规则，默认）| http（外部内容安全服务，需出网，默认未接实现）
+MODERATION_PROVIDER = (os.getenv("MODERATION_PROVIDER") or "rule").strip().lower()
+# 额外的禁用词，逗号分隔。留空则用 moderation.py 里的少量内置样例。
+MODERATION_TERMS = os.getenv("MODERATION_TERMS") or ""
+# 审核组件出错时：true=放行（默认，审核故障不该让客服停摆），false=拦截
+MODERATION_FAIL_OPEN = _env_bool("MODERATION_FAIL_OPEN", True)
+# 单次审核扫描的最大字符数（限制成本；文档超长时只审前 N 字）
+MODERATION_MAX_CHARS = _env_int("MODERATION_MAX_CHARS", 20000)
+# 日志里的手机号/身份证/银行卡/邮箱是否打码
+MODERATION_MASK_LOGS = _env_bool("MODERATION_MASK_LOGS", True)

@@ -28,6 +28,7 @@ from rank_bm25 import BM25Okapi
 import config
 from config import CHROMA_COLLECTION, CHROMA_SPACE  # 顺带在最早期设置 HF_ENDPOINT
 from metrics import retrieval_latency, retrieval_results
+from moderation import RejectedContent, check_document
 from rag import acl as rag_acl  # 文档级访问控制：检索的两条通道都必须过滤
 
 # 父块存储（MySQL）。注意 db 包在 import 时不连库、不 import 驱动，
@@ -952,9 +953,24 @@ def _init_rag(file_path: str, acl_meta: dict | None = None) -> int:
         logger.warning("文件 %s 未加载到任何文档", file_path)
         _record_document(file_path, 0, 0, error="未解析出任何内容", acl_meta=acl_meta)
         return 0
+
+    # ── 文档内容审核（必须在**入库之前**）─────────────────────────
+    # 知识库内容是会被注入所有用户提示词的。一份含提示注入的文档一旦入库，
+    # 之后**每次检索**都会把它喂给模型（投毒），而症状是"答案慢慢变味"，
+    # 极难归因。所以在这一步就拦住，并让上层的上传接口回 422。
+    verdict = check_document([s.text for s in sections])
+    if verdict.blocked:
+        logger.warning(
+            "文档未通过内容审核 src=%s reason=%s categories=%s",
+            file_path, verdict.reason, verdict.categories,
+        )
+        # 不在这里写 documents 表：外层 init_rag 的 except 会统一按"入库失败"留痕，
+        # 两处都写会互相覆盖成两条语义不同的记录。
+        raise RejectedContent(verdict.reason, verdict.categories)
+
     # 切分 大块和小块
     parents, children = _split_document(file_path, sections, acl_meta)
-    logger.info(f"[切分] {file_path}: {len(parents)} 个父块 / {len(children)} 个子块")
+    logger.info("[切分] %s: %d 个父块 / %d 个子块", file_path, len(parents), len(children))
 
     # ① 父块 → MySQL（先父后子）
     _save_parents(file_path, parents)

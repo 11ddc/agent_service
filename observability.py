@@ -37,6 +37,7 @@ from contextvars import ContextVar
 
 import config
 from metrics import http_latency, http_requests
+from moderation import mask_pii
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,31 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+class RedactingFilter(logging.Filter):
+    """把日志里的 PII（手机号/身份证/银行卡/邮箱）打码。
+
+    为什么放在**日志层**而不是各调用点：调用点有几十处、还会不断增加，
+    漏一处就泄露一次；挂在 handler 上则"只要经过日志就一定会被处理"。
+    审计表里的 detail 另有一道（见 auth.audit）。
+
+    ⚠️ 改写 `record.msg` 后必须清空 `record.args`：否则 Formatter 会拿着
+    已经被插值过的字符串再套一次 %-格式化，轻则输出错乱，重则抛异常。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not config.MODERATION_MASK_LOGS:
+            return True
+        try:
+            raw = record.getMessage()
+            masked = mask_pii(raw)
+            if masked != raw:
+                record.msg = masked
+                record.args = ()
+        except Exception:  # noqa: BLE001 - 脱敏失败绝不能把日志本身弄挂
+            pass
+        return True
+
+
 class KeyValueFormatter(logging.Formatter):
     """单行 key=value 格式，带 request_id。"""
 
@@ -98,6 +124,8 @@ def setup_logging(level: str | None = None) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(KeyValueFormatter())
     handler.addFilter(RequestIdFilter())
+    # 脱敏放在 handler 上：只要经过日志就一定被处理，不依赖各调用点自觉
+    handler.addFilter(RedactingFilter())
 
     root = logging.getLogger()
     for existing in list(root.handlers):

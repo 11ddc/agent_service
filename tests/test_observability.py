@@ -237,6 +237,90 @@ def test_context_is_cleared_after_the_request(app):
     assert obs.current_request_id() is None
 
 
+# ── 日志脱敏 ────────────────────────────────────────────────
+def test_redacting_filter_masks_pii_in_log_messages():
+    """脱敏放在 handler 上：只要经过日志就一定被处理，不依赖调用点自觉。"""
+    import config
+    import moderation as m
+
+    original = config.MODERATION_MASK_LOGS
+    config.MODERATION_MASK_LOGS = True
+    try:
+        record = logging.LogRecord(
+            "api.chat", logging.INFO, "f.py", 1,
+            "用户 %s 的订单查询", ("13812345678",), None,
+        )
+        filt = obs.RedactingFilter()
+
+        assert filt.filter(record) is True
+
+        text = obs.KeyValueFormatter().format(record)
+        assert "138****5678" in text
+        assert "13812345678" not in text
+        assert m.mask_pii("13812345678") == "138****5678"
+    finally:
+        config.MODERATION_MASK_LOGS = original
+
+
+def test_redacting_filter_clears_args_after_rewriting():
+    """⚠️ 改写 msg 后必须清空 args，否则 Formatter 会再套一次 %-格式化。"""
+    import config
+
+    original = config.MODERATION_MASK_LOGS
+    config.MODERATION_MASK_LOGS = True
+    try:
+        record = logging.LogRecord(
+            "x", logging.INFO, "f.py", 1, "号码 %s", ("13812345678",), None
+        )
+
+        obs.RedactingFilter().filter(record)
+
+        assert record.args == ()
+        # 关键：格式化不能抛异常（args 没清空时会 "not all arguments converted"）
+        assert "138****5678" in obs.KeyValueFormatter().format(record)
+    finally:
+        config.MODERATION_MASK_LOGS = original
+
+
+def test_redacting_filter_can_be_disabled():
+    import config
+
+    original = config.MODERATION_MASK_LOGS
+    config.MODERATION_MASK_LOGS = False
+    try:
+        record = logging.LogRecord("x", logging.INFO, "f.py", 1, "号码 13812345678", (), None)
+
+        obs.RedactingFilter().filter(record)
+
+        assert "13812345678" in obs.KeyValueFormatter().format(record)
+    finally:
+        config.MODERATION_MASK_LOGS = original
+
+
+def test_redacting_filter_leaves_clean_logs_untouched():
+    record = logging.LogRecord("x", logging.INFO, "f.py", 1, "订单 A1 已发货", (), None)
+
+    obs.RedactingFilter().filter(record)
+
+    assert obs.KeyValueFormatter().format(record).endswith("订单 A1 已发货")
+
+
+def test_setup_logging_registers_both_filters():
+    """真实入口必须同时装上 request_id 与脱敏两个 filter。"""
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        obs.setup_logging()
+        filters = root.handlers[0].filters
+        assert any(isinstance(f, obs.RequestIdFilter) for f in filters)
+        assert any(isinstance(f, obs.RedactingFilter) for f in filters)
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        for handler in before:
+            root.addHandler(handler)
+
+
 def test_setup_logging_is_idempotent():
     """重复调用不能叠加 handler（否则每条日志打多遍）。"""
     root = logging.getLogger()

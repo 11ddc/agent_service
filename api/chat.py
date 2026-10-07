@@ -3,6 +3,8 @@ import json
 import logging
 from uuid import uuid4
 
+import moderation
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -16,9 +18,11 @@ from agent.graph import (  # LangGraph 编排图（拆分→意图→路由→�
     agent_node,
     graph,
 )
+from auth import audit
 from auth.deps import Principal, require_user
 from intent.examples import HANDOFF_RE
 from metrics import chat_outcomes, handoff_events
+from moderation import STAGE_INPUT, STAGE_OUTPUT
 from query_rewrite import aappend_history
 from rag import acl as rag_acl
 from redis_client import redis_client
@@ -119,6 +123,28 @@ async def chat(request: ChatRequest, principal: Principal = Depends(require_user
     # 请求结果（恰好记一次）：ok / fallback / error
     outcome = "ok"
 
+    # ── 输入侧内容审核 ────────────────────────────────────────
+    # 违规时返回一句礼貌拒答而不是改状态码：客户端拿到的一律是"一次正常问答"，
+    # 不必为一个内容策略引入新的错误分支。
+    in_verdict = moderation.check(request.question, moderation.STAGE_INPUT)
+    if in_verdict.blocked:
+        logger.warning(
+            "提问被审核拦截 user=%s categories=%s reason=%s",
+            principal.user_id, in_verdict.categories, in_verdict.reason,
+        )
+        await audit.record(
+            "moderation.blocked", "blocked", principal=principal, target="input",
+            detail=f"categories={in_verdict.categories} reason={in_verdict.reason}",
+            request=request,
+        )
+        await aappend_history(session_key, request.question, moderation.REFUSAL_TEXT)
+        return {
+            "answer": moderation.REFUSAL_TEXT,
+            "session_id": request.session_id,
+            "intent": "blocked",
+            "method": "moderation",
+        }
+
     # 转人工检测：先于一切执行，但只附加提示、不短路主流程；
     # Redis 异常时静默降级，聊天照常（不影响当前聊天接口）
     handoff_msg = None
@@ -186,6 +212,21 @@ async def chat(request: ChatRequest, principal: Principal = Depends(require_user
         meta = {"intent": "unknown", "method": "fallback"}
         outcome = "fallback"
 
+    # ── 输出侧内容审核 ────────────────────────────────────────
+    # 生成侧也可能说出不该说的（越狱、泄露系统提示词、编出违规操作步骤）。
+    # 只审输入是很多系统的漏洞：它们假设"模型不会自己违规"。
+    out_verdict = moderation.check(answer, moderation.STAGE_OUTPUT)
+    if out_verdict.blocked:
+        logger.warning(
+            "答案被审核拦截 user=%s categories=%s", principal.user_id, out_verdict.categories
+        )
+        await audit.record(
+            "moderation.blocked", "blocked", principal=principal, target="output",
+            detail=f"categories={out_verdict.categories} reason={out_verdict.reason}",
+            request=request,
+        )
+        answer = moderation.REFUSAL_TEXT
+
     if handoff_msg:
         answer = f"{answer}\n\n{handoff_msg}" if answer else handoff_msg
         handoff_events().inc()
@@ -246,6 +287,34 @@ async def chat_stream(
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
+    # ── 输入侧内容审核：用**同样的事件序列**回一句拒答 ──────────
+    # 流式接口不能返回普通 JSON，否则客户端要为一个内容策略写两套解析。
+    in_verdict = moderation.check(request.question, moderation.STAGE_INPUT)
+    if in_verdict.blocked:
+        logger.warning(
+            "流式提问被审核拦截 user=%s categories=%s",
+            principal.user_id, in_verdict.categories,
+        )
+        await audit.record(
+            "moderation.blocked", "blocked", principal=principal, target="input",
+            detail=f"categories={in_verdict.categories} reason={in_verdict.reason}",
+            request=request,
+        )
+
+        async def refusal_stream():
+            yield _sse({"type": "delta", "content": moderation.REFUSAL_TEXT})
+            yield _sse({
+                "type": "meta", "session_id": request.session_id,
+                "intent": "blocked", "method": "moderation",
+            })
+            yield _sse({"type": "done"})
+
+        return EventSourceResponse(
+            refusal_stream(),
+            ping=15,
+            headers={"X-Session-Id": request.session_id},
+        )
+
     def emitter(event: dict) -> None:
         # 节点跑在工作线程，而 asyncio.Queue 属于事件循环 → 必须线程安全地回推
         loop.call_soon_threadsafe(queue.put_nowait, event)
@@ -275,6 +344,23 @@ async def chat_stream(
                 rag_acl.Acl.of(principal),
             )
             final_answer = result.get("answer") or ""
+
+            # 输出侧审核：命中就**先发 reset 再发拒答**。
+            # reset 是已有的机制（预算降级重试也用它），客户端会丢弃已收到的正文；
+            # 只发新 delta 的话，客户端会把拒答接在违规内容后面 —— 等于没拦。
+            out_verdict = moderation.check(final_answer, moderation.STAGE_OUTPUT)
+            if out_verdict.blocked:
+                logger.warning(
+                    "流式答案被审核拦截 user=%s categories=%s",
+                    principal.user_id, out_verdict.categories,
+                )
+                await audit.record(
+                    "moderation.blocked", "blocked", principal=principal, target="output",
+                    detail=f"categories={out_verdict.categories}", request=request,
+                )
+                emitter({"type": "reset", "reason": "内容审核未通过"})
+                final_answer = moderation.REFUSAL_TEXT
+                streamed.clear()
 
             # ── 流末对账 ─────────────────────────────────────────────
             # 只有 RAG 路径会吐 delta。若 intent 路由到 agent_flow / tool_agent /

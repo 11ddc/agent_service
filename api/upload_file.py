@@ -10,6 +10,7 @@ from auth import audit
 from auth.deps import Principal, require_roles
 from body_limit import MAX_UPLOAD_BYTES
 from config import ACL_DEFAULT_VISIBILITY, ACL_REQUIRE_APPROVAL
+from moderation import RejectedContent
 from rag import acl as rag_acl
 from rag.rag import init_rag
 from rag.structure import doc_id_of as doc_store_id
@@ -201,7 +202,24 @@ async def upload_file(
         ),
         visibility=ACL_DEFAULT_VISIBILITY,
     )
-    doc_count = await asyncio.to_thread(init_rag, str(file_path), acl_meta)
+    try:
+        doc_count = await asyncio.to_thread(init_rag, str(file_path), acl_meta)
+    except RejectedContent as e:
+        # 内容审核未通过 → 422（是"内容不可接受"，不是"我们挂了"）。
+        # 知识库内容会被注入所有用户的提示词，一份含提示注入的文档一旦入库，
+        # 之后每次检索都会把它喂给模型 —— 必须在入库前拦住。
+        await audit.record(
+            "kb.upload",
+            "blocked",
+            principal=principal,
+            target=filename,
+            detail=f"内容审核未通过: {e.reason} categories={e.categories}",
+        )
+        logger.warning("上传被内容审核拦下 user=%s file=%s", principal.user_id, filename)
+        raise HTTPException(
+            status_code=422,
+            detail=f"文档内容未通过审核（{e.reason}），未入库",
+        ) from e
 
     # 5. 审计：谁上传了什么、结果如何。知识库变更属于必须留痕的操作。
     doc_id = doc_store_id(str(file_path))
