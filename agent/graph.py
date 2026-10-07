@@ -99,13 +99,13 @@ def rewrite_node(state: AgentState) -> dict:
 def splitter_node(state: AgentState) -> dict:
     """问题拆分节点：多问题 → 子问题列表；单问题 → 空列表。"""
     querys = split_questions(state["question"])
-    print(f"问题拆分结果: {querys}")
+    logger.info(f"问题拆分结果: {querys}")
     return {"sub_questions": list(querys) if querys else []}
 
 
 def route_after_split(state: AgentState) -> str:
     """拆分后判断：多问题 → multi_loop；单问题 → 单问题子图。question_flow"""
-    print(f"最终问题：{state['question']}，拆分结果：{state.get('sub_questions')}")
+    logger.info(f"最终问题：{state['question']}，拆分结果：{state.get('sub_questions')}")
     return (
         "multi_loop" if len(state.get("sub_questions") or []) > 1 else "question_flow"
     )
@@ -168,7 +168,7 @@ def tool_call_node(state: AgentState) -> dict:
     last_msg = state["messages"][-1]
 
     # 打印工具调用信息（现在 tc 是字典，直接打印即可）
-    print(f"tool_call_node——msg: {last_msg}")
+    logger.info(f"tool_call_node——msg: {last_msg}")
 
     tool_messages = []
     # 如果 tool_calls 为 None 或空列表，直接返回空消息列表
@@ -181,7 +181,7 @@ def tool_call_node(state: AgentState) -> dict:
         tool_args = tc["args"]  # 已经是字典，不需要 json.loads
         tool_id = tc["id"]
 
-        print(f"调用工具：{tool_name}，参数：{tool_args}")  # 清晰打印
+        logger.info(f"调用工具：{tool_name}，参数：{tool_args}")  # 清晰打印
 
         # ── MCP 接入点②:外部 MCP 工具(mcp__<server>__<tool>)由 mcp_client 同步执行
         if tool_name.startswith("mcp__"):
@@ -198,7 +198,7 @@ def tool_call_node(state: AgentState) -> dict:
                     resolved_customer=state.get("customer_id"),
                 )
             except Exception as e:
-                print(f"MCP 工具调用失败: {e}")
+                logger.warning(f"MCP 工具调用失败: {e}")
                 result = f"[MCP 工具执行失败: {e!s}]"
             tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
 
@@ -210,7 +210,7 @@ def tool_call_node(state: AgentState) -> dict:
                 result = LOCAL_TOOL_MAP[tool_name].invoke(tool_args)
             except Exception as e:  # noqa: BLE001
                 # 工具失败要回填错误、而不是中断链路：模型看到失败原因还能换个说法
-                print(f"本地工具调用失败 {tool_name}: {e}")
+                logger.warning(f"本地工具调用失败 {tool_name}: {e}")
                 result = f"[工具 {tool_name} 执行失败: {e!s}]"
             tool_messages.append(
                 ToolMessage(content=_as_text(result), tool_call_id=tool_id)
@@ -229,7 +229,7 @@ def tool_call_node(state: AgentState) -> dict:
             # tool_continue 判的是"最后一条消息有没有 tool_calls"，如果这里什么都不追加，
             # 最后一条仍是那条带 tool_calls 的 AIMessage → tool_call → llm_call →
             # tool_call …，**无限循环**。回一条"不可用"让模型自己收尾。
-            print(f"未知工具：{tool_name}，忽略")
+            logger.info(f"未知工具：{tool_name}，忽略")
             tool_messages.append(
                 ToolMessage(content=f"[工具 {tool_name} 不可用]", tool_call_id=tool_id)
             )
@@ -269,23 +269,23 @@ def llm_call_node(state: AgentState) -> dict:
     # full_messages = history_msg + [user_msg]
     try:
         res = call_zhipu_chat(state["messages"])
-        print("调用智谱chat模型完成，", res)
+        logger.info("调用智谱chat模型完成， %s", res)
         zhipi_msg = res.choices[0].message
 
-        print("toolcalls_zhipu", zhipi_msg)
+        logger.info("toolcalls_zhipu %s", zhipi_msg)
         new_ai_msg = AIMessage(
             content=zhipi_msg.content or "",
             # 将智谱的工具调用转换为 LangChain ToolCall 格式
             tool_calls=convert_zhipu_tool_calls(zhipi_msg.tool_calls),
         )
-        print("llm_call_node返回的AIMessage:", new_ai_msg)
+        logger.info("llm_call_node返回的AIMessage: %s", new_ai_msg)
 
         # 每进一次 llm_call 就是一轮"模型 ⇄ 工具"协商；tool_continue 用它兜住循环
         rounds = int(state.get("tool_rounds") or 0) + 1
         return {"messages": new_ai_msg, "tool_rounds": rounds}
 
     except Exception as e:
-        print(f"调用智谱chat模型失败: {e}")
+        logger.warning(f"调用智谱chat模型失败: {e}")
         # 上抛而不是静默返回 None:否则消息停在 HumanMessage,
         # 会被 tool_continue/data_node 当成"用户原问题"回显;抛出让外层兜底接管。
         raise
@@ -295,7 +295,7 @@ def llm_call_node(state: AgentState) -> dict:
 def tool_continue(state: AgentState) -> Literal["tool_call", "data_node"]:
 
     last_msg = state["messages"][-1]
-    print("tool_continue检查是否需要调用工具，last_msg:", last_msg)
+    logger.info("tool_continue检查是否需要调用工具，last_msg: %s", last_msg)
     # 用 getattr 判空:最后一条可能是 HumanMessage(没有 tool_calls 属性),
     # 直接访问会抛 AttributeError 把整图带崩(原实现就是这么挂的)。
     if not getattr(last_msg, "tool_calls", None):
@@ -323,7 +323,7 @@ def data_node(state: AgentState) -> dict:
             f"抱歉，这个问题需要查询的步骤超过了上限（{TOOL_MAX} 轮），"
             f"我没能给出可靠答案。请补充更具体的信息（例如订单号）后重试。"
         )
-    print(f"data_node——answer: {answer}")
+    logger.info(f"data_node——answer: {answer}")
     # 返回包含 answer 的字典，更新状态
     return {"answer": answer}
 
@@ -383,18 +383,16 @@ def rag_node(state: AgentState) -> dict:
             emit=emitter,  # None → 非流式（/chat 链路）；回调 → 边生成边推 delta
         )
         result = gen["answer"]
-        print(
-            f"[RAG预算] 预算={gen['budget_tokens']} 实耗={gen['used_tokens']} "
+        logger.info(f"[RAG预算] 预算={gen['budget_tokens']} 实耗={gen['used_tokens']} "
             f"资料={gen['kept']}/{gen['kept'] + gen['dropped']} 丢弃={gen['dropped']} "
-            f"截断={gen['truncated']} 降级={gen['degraded']} 重试={gen['retries']}"
-        )
+            f"截断={gen['truncated']} 降级={gen['degraded']} 重试={gen['retries']}")
 
-        print(f"RAG 生成结果: {result}")
+        logger.info(f"RAG 生成结果: {result}")
     except KnowledgeBaseError as e:
-        print(f"知识库不可用: {e}")
+        logger.warning(f"知识库不可用: {e}")
         result = str(e)  # 连接失败/空库 → 把具体提示语原样返回给用户
     except Exception as e:
-        print(f"知识库检索失败: {e}")
+        logger.warning(f"知识库检索失败: {e}")
         result = "知识库检索失败，请稍后重试。"
     return {"answer": result}
 
@@ -458,7 +456,7 @@ def multi_loop_node(state: AgentState) -> dict:
 
     parts, last_meta = [], None
     for i, q in enumerate(questions):
-        print("多问题循环：", q)
+        logger.info("多问题循环： %s", q)
         if i:
             # 必须与下面 "\n".join(parts) 的分隔保持一致，否则流式正文会缺
             # 子问题之间的换行（同步链路下 emit 是空操作，无影响）。

@@ -22,6 +22,9 @@
 
 from collections.abc import Callable
 from contextvars import ContextVar, Token
+import logging
+
+logger = logging.getLogger(__name__)
 
 Emitter = Callable[[dict], None]
 
@@ -56,4 +59,4 @@ def emit(event: dict) -> None:
         fn(event)
     except Exception as e:
         # 出口故障（例如事件循环已关闭）只影响流式观感，不能影响答案生成
-        print(f"流式事件推送失败，忽略: {e}")
+        logger.warning(f"流式事件推送失败，忽略: {e}")

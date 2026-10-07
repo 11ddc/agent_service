@@ -20,6 +20,9 @@ import threading
 from langchain_core.embeddings import Embeddings
 
 import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class LocalEmbeddings(Embeddings):
@@ -59,18 +62,14 @@ class LocalEmbeddings(Embeddings):
                         self.model = SentenceTransformer(self.model_name, device=self.device)
                     except Exception as e:  # noqa: BLE001
                         if self.device != "cpu":
-                            print(
-                                f"[LocalEmbeddings] {self.device} 加载失败，回退 CPU: {e!r}"
-                            )
+                            logger.warning(f"[LocalEmbeddings] {self.device} 加载失败，回退 CPU: {e!r}")
                             self.model = SentenceTransformer(self.model_name, device="cpu")
                         else:
                             self.load_error = f"{type(e).__name__}: {e}"
                             raise
-                    print(
-                        f"[LocalEmbeddings] 模型就绪：{self.model_name} "
+                    logger.info(f"[LocalEmbeddings] 模型就绪：{self.model_name} "
                         f"@ {getattr(self.model, 'device', self.device)} "
-                        f"维度={self.model.get_sentence_embedding_dimension()}"
-                    )
+                        f"维度={self.model.get_sentence_embedding_dimension()}")
         return self.model
 
     # ── 编码 ────────────────────────────────────────────────

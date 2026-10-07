@@ -11,6 +11,9 @@ from openai import OpenAI
 
 from mcp_client import get_mcp_tools_definition
 from tools_agent.kb_tools import KB_TOOLS
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 有这个才能进env文件读取内容
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
@@ -102,10 +105,10 @@ LOCAL_TOOL_MAP: dict = {t.name: t for t in _LOCAL_TOOLS}
 def call_zhipu_chat(messages: list):
     # 格式转换(同步:内部用 asyncio.run 拉 MCP 工具,见 mcp_client.py)
     mcp_tools = get_mcp_tools_definition()
-    print(f"MCP工具列表，mcp_tools: {mcp_tools}")
+    logger.info(f"MCP工具列表，mcp_tools: {mcp_tools}")
 
     payload = convert_to_openai_messages(messages)
-    print("调用智谱chat模型，messages:", payload)
+    logger.info("调用智谱chat模型，messages: %s", payload)
 
     # ── MCP 接入点①：本地工具 + MCP 工具合并喂给 LLM
     # 合并后为空时**不要传 tools/tool_choice**：部分 OpenAI 兼容端点对空数组直接回 400。

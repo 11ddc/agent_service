@@ -43,6 +43,9 @@ import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ── 默认参数 ─────────────────────────────────────────────
 # qwen3-32b 原生上下文窗口（rag/generatellm.py 生成模型）
@@ -81,7 +84,7 @@ def _get_encoder():
             _encoder = tiktoken.get_encoding("cl100k_base")
         except Exception as e:  # 没装 tiktoken 也要能跑，只是估得粗
             _encoder_unavailable = True
-            print(f"[预算] tiktoken 不可用，改用字符粗估: {e}")
+            logger.warning(f"[预算] tiktoken 不可用，改用字符粗估: {e}")
     return _encoder
 
 

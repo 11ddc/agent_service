@@ -20,6 +20,9 @@ import base64
 import os
 
 from dotenv import load_dotenv
+import logging
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env(键名不会被 \ufeff 污染)
 
@@ -135,7 +138,7 @@ def hybrid_image_text(image_bytes: bytes, ocr_text: str, *, source: str = "") ->
         try:
             vision_text = vision_extract_text(image_bytes, source=source)
         except VisionError as e:
-            print(f"[vision_ocr] 视觉补充失败,仅保留本地 OCR: {e}")
+            logger.warning(f"[vision_ocr] 视觉补充失败,仅保留本地 OCR: {e}")
             return ocr_text.strip()
         if vision_text:
             return f"{ocr_text.strip()}\n\n[视觉补充]: {vision_text}"
@@ -148,5 +151,5 @@ def hybrid_image_text(image_bytes: bytes, ocr_text: str, *, source: str = "") ->
     try:
         return vision_extract_text(image_bytes, source=source)
     except VisionError as e:
-        print(f"[vision_ocr] 本地 OCR 为空且视觉模型不可用,图片文字跳过: {e}")
+        logger.warning(f"[vision_ocr] 本地 OCR 为空且视觉模型不可用,图片文字跳过: {e}")
         return ""

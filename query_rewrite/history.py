@@ -24,6 +24,9 @@ import redis as redis_sync
 
 from config import REDIS_URL
 from redis_client import redis_client  # 异步客户端（async 场景用）
+import logging
+
+logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "user:{}:history"
 _DEFAULT_TTL = 1 * 3600  # 1 小时（如需 48 小时改成 48 * 3600）
@@ -59,7 +62,7 @@ async def aget_history(
         # 返回后八条消息
         return msgs[-max_messages:] if max_messages else msgs
     except Exception as e:
-        print(f"读取会话历史失败，忽略: {e}")
+        logger.warning(f"读取会话历史失败，忽略: {e}")
         return []
 
 
@@ -86,7 +89,7 @@ async def aappend_history(
         msgs = msgs[-_MAX_MESSAGES:]
         await redis_client.set(key, json.dumps(msgs, ensure_ascii=False), ex=ttl)
     except Exception as e:
-        print(f"写入会话历史失败，忽略: {e}")
+        logger.warning(f"写入会话历史失败，忽略: {e}")
 
 
 def get_history(session_id: str, max_messages: int = _MAX_MESSAGES) -> list[dict]:
@@ -102,7 +105,7 @@ def get_history(session_id: str, max_messages: int = _MAX_MESSAGES) -> list[dict
             return []
         return msgs[-max_messages:] if max_messages else msgs
     except Exception as e:
-        print(f"读取会话历史失败，忽略: {e}")
+        logger.warning(f"读取会话历史失败，忽略: {e}")
         return []
 
 
@@ -125,4 +128,4 @@ def append_history(
         msgs = msgs[-_MAX_MESSAGES:]
         _sync_redis.set(key, json.dumps(msgs, ensure_ascii=False), ex=ttl)
     except Exception as e:
-        print(f"写入会话历史失败，忽略: {e}")
+        logger.warning(f"写入会话历史失败，忽略: {e}")

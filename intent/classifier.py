@@ -119,11 +119,11 @@ class EmbeddingClassifier:
                         IntentName(k): [list(v) for v in vecs]
                         for k, vecs in data["vectors"].items()
                     }
-                    print(f"意图示例向量：加载缓存（{count} 条）")
+                    logger.info(f"意图示例向量：加载缓存（{count} 条）")
                     return
 
             except Exception as e:
-                print(f"意图示例向量缓存读取失败，将重新生成: {e}")
+                logger.warning(f"意图示例向量缓存读取失败，将重新生成: {e}")
 
         # 计算需要写入的向量。
         # ⚠️ 必须按**查询侧**编码（bge-zh 要求查询加指令前缀、文档不加）：

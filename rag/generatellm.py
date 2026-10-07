@@ -17,6 +17,9 @@ from context_budget import (
     is_context_overflow,
     pack_docs,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
@@ -118,7 +121,7 @@ class RAGGenerator:
         :param query: 用户原始问题
         :param reranked_docs: 重排序后的文档列表
         """
-        print("问题：query：", query)
+        logger.info("问题：query： %s", query)
         # 先拼成带编号的纯文本，直接把 Document 列表塞进 format 会得到一堆
         # Document(page_content=..., metadata=...) 的对象字符串，污染上下文
         context_text = _format_docs(reranked_docs)
@@ -144,11 +147,11 @@ class RAGGenerator:
         except Exception as e:
             # 打印完整异常类型和堆栈（之前 KeyError 只打印出 'i' 就是吃了这个亏），
             # 然后抛给上层：graph.py 的 rag_node 会接住并走降级文案
-            print(f"生成发生问题：{e!r}")
+            logger.warning(f"生成发生问题：{e!r}")
             traceback.print_exc()
             raise
 
-        print("经过生成之后的文档：", res)
+        logger.info("经过生成之后的文档： %s", res)
 
         return res.choices[0].message.content
 
@@ -310,9 +313,7 @@ class RAGGenerator:
                 if not is_context_overflow(e):
                     raise  # 不是超限 → 交给上层原有异常处理，不掩盖真实故障
                 retries += 1
-                print(
-                    f"[预算] 输入被判超限，预算 {attempt_budget} → 降至 1/2 重试: {e}"
-                )
+                logger.warning(f"[预算] 输入被判超限，预算 {attempt_budget} → 降至 1/2 重试: {e}")
                 if streamed:
                     # 流式下"先吐出去才发现超限"是收不回来的，只能通知前端丢弃
                     _emit(
@@ -324,9 +325,7 @@ class RAGGenerator:
                     streamed = False
                 continue
             if retries:
-                print(
-                    f"[预算] 降级重试成功（重试 {retries} 次，预算 {attempt_budget}）"
-                )
+                logger.info(f"[预算] 降级重试成功（重试 {retries} 次，预算 {attempt_budget}）")
             return {
                 "answer": answer,
                 "used_tokens": pack.used_tokens,
@@ -339,7 +338,7 @@ class RAGGenerator:
             }
 
         # 缩到 1/4 仍超限 → 分段生成
-        print("[预算] 缩到 1/4 预算仍超限，改用 map-reduce 分段生成")
+        logger.info("[预算] 缩到 1/4 预算仍超限，改用 map-reduce 分段生成")
         if streamed:
             # map-reduce 是 N+1 次调用，不做流式（见 _map_reduce_generate 注释），
             # 所以先让前端丢弃已推的作废内容，完整答案在最后一次性下发。
@@ -384,7 +383,7 @@ class RAGGenerator:
         if buf:
             batches.append(buf)
 
-        print(f"[预算] map-reduce：{len(docs)} 段资料分成 {len(batches)} 批")
+        logger.info(f"[预算] map-reduce：{len(docs)} 段资料分成 {len(batches)} 批")
 
         partials: list[str] = []
         for i, batch in enumerate(batches, 1):
@@ -407,7 +406,7 @@ class RAGGenerator:
                     ),  # 局部答案要短，否则合并阶段又超
                 )
             except Exception as e:
-                print(f"[预算] 第 {i}/{len(batches)} 批局部生成失败，跳过该批: {e}")
+                logger.warning(f"[预算] 第 {i}/{len(batches)} 批局部生成失败，跳过该批: {e}")
                 continue
             if part:
                 partials.append(part)
@@ -421,7 +420,7 @@ class RAGGenerator:
         merge_pack = pack_docs(partials, budget_tokens)
         merge_context = merge_pack.format(declare_partial=False)
         if merge_pack.dropped:
-            print(f"[预算] 合并阶段丢弃 {merge_pack.dropped} 份局部结果")
+            logger.info(f"[预算] 合并阶段丢弃 {merge_pack.dropped} 份局部结果")
         return self._chat(
             [
                 {"role": "system", "content": "你是严谨的中文知识助手。"},

@@ -3,6 +3,9 @@ import threading
 # os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class LocalReranker:
@@ -39,9 +42,7 @@ class LocalReranker:
                     # 重 import 放到函数内部，启动时 import 本模块零开销
                     from sentence_transformers import CrossEncoder
 
-                    print(
-                        f"[LocalReranker] 首次调用，加载模型 {self.model_name} 到 {self.device} ..."
-                    )
+                    logger.info(f"[LocalReranker] 首次调用，加载模型 {self.model_name} 到 {self.device} ...")
                     try:
                         self.model = CrossEncoder(self.model_name, device=self.device)
                     except Exception as e:  # noqa: BLE001
@@ -49,13 +50,11 @@ class LocalReranker:
                         # device="cuda" 会直接抛错，而 reordering() 只会降级成
                         # "精排没跑"，从日志里根本看不出是设备选错了。退 CPU 重试。
                         if self.device != "cpu":
-                            print(
-                                f"[LocalReranker] {self.device} 加载失败，回退 CPU: {e!r}"
-                            )
+                            logger.warning(f"[LocalReranker] {self.device} 加载失败，回退 CPU: {e!r}")
                             self.model = CrossEncoder(self.model_name, device="cpu")
                         else:
                             raise
-                    print("[LocalReranker] 模型加载完成，后续调用直接复用")
+                    logger.info("[LocalReranker] 模型加载完成，后续调用直接复用")
         return self.model
 
     def _score(self, query: str, docs: list) -> list[tuple]:
@@ -73,7 +72,7 @@ class LocalReranker:
         model = self.load_model()
         # 返回分数 交叉编码
         scores = model.predict(data)
-        print("分数scores：", scores)
+        logger.debug("分数scores： %s", scores)
 
         # 将文档和分数配对然后排序
         # zip 两个数组一一绑定 【1，2】 【1，2】zip [(1,1),(2,2)]
@@ -104,5 +103,5 @@ class LocalReranker:
         if top_n and top_n > 0:
             reranked_docs = reranked_docs[:top_n]
 
-        print("重排序的文档：", reranked_docs)
+        logger.info("重排序的文档： %s", reranked_docs)
         return reranked_docs

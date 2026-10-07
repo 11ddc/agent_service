@@ -167,7 +167,7 @@ def find_image_references(content: str) -> list[str]:
 
     pattern = r"!\[.*?\]\((.*?)\)"
     matches = re.findall(pattern, content)
-    print(f"提取到的图片引用: {matches}")
+    logger.info(f"提取到的图片引用: {matches}")
     # 只保留文件名部分
     return [os.path.basename(match) for match in matches]
 
@@ -234,7 +234,7 @@ def _load_pdf(file_path: str) -> list[Section]:
     if PDF_DROP_REPEATED_LINES:
         page_texts, dropped = st.drop_repeated_lines(page_texts)
         if dropped:
-            print(f"[PDF] 去掉 {len(dropped)} 种重复行（页眉/页脚），如: {dropped[:5]}")
+            logger.info(f"[PDF] 去掉 {len(dropped)} 种重复行（页眉/页脚），如: {dropped[:5]}")
 
     sections: list[Section] = []
     level_map: dict[int, str] = {}  # 跨页延续的"层级 → 标题"映射
@@ -328,15 +328,15 @@ def _ocr_image_section(
         with Image.open(io.BytesIO(img_bytes)) as im:
             ocr_text = pytesseract.image_to_string(im, lang=OCR_LANG, timeout=_OCR_TIMEOUT)
     except Exception as e:  # OCR 挂掉不应该毁掉整个文档，交给视觉模型兜底
-        print(f"[OCR] {label} 本地识别失败，改由视觉模型兜底: {e!r}")
+        logger.warning(f"[OCR] {label} 本地识别失败，改由视觉模型兜底: {e!r}")
         ocr_text = ""
 
     final_text = hybrid_image_text(img_bytes, ocr_text, source=source)
     if not final_text.strip():
-        print(f"[OCR] {label} 未识别出文字，跳过")
+        logger.info(f"[OCR] {label} 未识别出文字，跳过")
         return None
 
-    print(f"[OCR] {label} → {len(final_text)} 字")
+    logger.info(f"[OCR] {label} → {len(final_text)} 字")
     return Section(
         text=f"【{label}】\n{final_text.strip()}",
         section_path=st.path_of(level_map),
@@ -441,7 +441,7 @@ def _ocr_docx_image(
     # 视觉模型增强（混合方案）:OCR 为空时补 Qwen3-VL,见 rag/vision_ocr.py
     text = hybrid_image_text(blob, text, source=str(img_path))
     if text.strip():
-        print(f"OCR 识别图片 {img_path.name} 的文字: {text.strip()}")
+        logger.info(f"OCR 识别图片 {img_path.name} 的文字: {text.strip()}")
 
     cache[r_id] = text.strip()
     return cache[r_id]
@@ -667,9 +667,7 @@ def _sheet_to_windows(sheet) -> list[tuple[str, int, int]]:
         # 记住真实行号：空行会被跳过，用完索引推行号会报错（试过，会少算）
         rows.append((row_no, cells))
         if len(rows) > XLSX_MAX_TOTAL_ROWS:
-            print(
-                f"[Excel] 工作表 {sheet.title} 超过 {XLSX_MAX_TOTAL_ROWS} 行，超出部分不入库"
-            )
+            logger.info(f"[Excel] 工作表 {sheet.title} 超过 {XLSX_MAX_TOTAL_ROWS} 行，超出部分不入库")
             break
 
     if not rows:
@@ -719,7 +717,7 @@ def _load_xlsx(file_path: str) -> list[Section]:
     try:
         for sheet in workbook.worksheets:
             windows = _sheet_to_windows(sheet)
-            print(f"[Excel] 工作表 {sheet.title} → {len(windows)} 个块")
+            logger.info(f"[Excel] 工作表 {sheet.title} → {len(windows)} 个块")
             for text, start, end in windows:
                 sections.append(
                     Section(
@@ -760,7 +758,7 @@ def _load_file(file_path: str) -> list[Section]:
         return _load_xlsx(str(file_path))
     if suffix == ".xls":
         # openpyxl 读不了旧版二进制 .xls（要 xlrd），明确提示而不是静默返回空
-        print(f"旧版 .xls 不支持，请另存为 .xlsx 后重新上传: {file_path}")
+        logger.info(f"旧版 .xls 不支持，请另存为 .xlsx 后重新上传: {file_path}")
         return []
     return []
 
@@ -798,10 +796,10 @@ def _save_parents(source: str, parents: list[dict]) -> int:
     ]
     try:
         count = parent_store.replace(source, st.doc_id_of(source), rows)
-        print(f"[父块] {source} → MySQL {count} 条")
+        logger.info(f"[父块] {source} → MySQL {count} 条")
         return count
     except MySQLUnavailable as e:
-        print(f"[父块] MySQL 不可用，跳过父块写入（检索将降级为纯子块）: {e}")
+        logger.warning(f"[父块] MySQL 不可用，跳过父块写入（检索将降级为纯子块）: {e}")
         return 0
 
 
@@ -956,7 +954,7 @@ def _init_rag(file_path: str, acl_meta: dict | None = None) -> int:
         return 0
     # 切分 大块和小块
     parents, children = _split_document(file_path, sections, acl_meta)
-    print(f"[切分] {file_path}: {len(parents)} 个父块 / {len(children)} 个子块")
+    logger.info(f"[切分] {file_path}: {len(parents)} 个父块 / {len(children)} 个子块")
 
     # ① 父块 → MySQL（先父后子）
     _save_parents(file_path, parents)
@@ -985,9 +983,9 @@ def _init_rag(file_path: str, acl_meta: dict | None = None) -> int:
                 metadatas=[c[2] for c in children],
                 ids=new_ids,
             )
-            print(f"文件 {file_path} 入库 {len(children)} 个子块")
+            logger.info(f"文件 {file_path} 入库 {len(children)} 个子块")
         else:
-            print(f"文件 {file_path} 未切分出任何文档块")
+            logger.info(f"文件 {file_path} 未切分出任何文档块")
 
         # 清掉这个文件残留的旧块（重建后块数变少时才会真的有东西要删）。
         # children 为空时不动旧数据：宁可留着旧版本，也不要把文档清空。
@@ -996,10 +994,10 @@ def _init_rag(file_path: str, acl_meta: dict | None = None) -> int:
             stale = existing - set(new_ids)
             if stale:
                 store.delete(ids=sorted(stale))
-                print(f"文件 {file_path} 清理旧块 {len(stale)} 个")
+                logger.info(f"文件 {file_path} 清理旧块 {len(stale)} 个")
     except Exception as e:
         # 留痕交给外层 init_rag 统一做（解析阶段失败也要留痕，不能只有这里记）
-        print(f"子块入库失败: {e!r}")
+        logger.warning(f"子块入库失败: {e!r}")
         raise
 
     # ③ 文档元数据（记录性数据，失败不影响检索）
@@ -1068,9 +1066,9 @@ def _ensure_ready() -> None:
             # 数据库转为检索器
             _retriever = store.as_retriever(search_kwargs={"k": TOP_K})
             _is_initialized = True
-            print("知识库连接成功（读取侧懒初始化）")
+            logger.info("知识库连接成功（读取侧懒初始化）")
         except Exception as e:
-            print(f"知识库连接失败: {e}")
+            logger.warning(f"知识库连接失败: {e}")
             _vectorstore = None
             _retriever = None
             _is_initialized = False
@@ -1106,10 +1104,10 @@ def _build_bm25_index() -> None:
 
             # print(f"_bm25_corpus：：",_bm25_corpus)
             _bm25 = BM25Okapi(_bm25_corpus)
-            print("bm25222", _bm25)
-            print(f"BM25 索引构建完成，共 {len(texts)} 个 chunk")
+            logger.debug("bm25222 %s", _bm25)
+            logger.info(f"BM25 索引构建完成，共 {len(texts)} 个 chunk")
         except Exception as e:
-            print(f"BM25 索引构建失败，降级为纯向量检索: {e}")
+            logger.warning(f"BM25 索引构建失败，降级为纯向量检索: {e}")
             _bm25, _bm25_corpus, _chunk_docs = None, [], []
 
 
@@ -1368,10 +1366,10 @@ def get_status() -> dict:
             collection_name=CHROMA_COLLECTION,
             collection_metadata={"hnsw:space": CHROMA_SPACE},
         )
-        print("知识库状态embedding模型")
+        logger.info("知识库状态embedding模型")
         count = store._collection.count()
     except Exception as e:
-        print(f"获取知识库状态失败: {e}")
+        logger.warning(f"获取知识库状态失败: {e}")
         return {
             "initialized": False,
             "document_count": 0,
@@ -1417,7 +1415,7 @@ class _DashScopeReranker:
         )
         # 官方 API：status_code==200 成功；失败时真实原因在 code/message 里
         if resp.status_code != 200:
-            print(f"重排 API 失败: code={resp.code}, message={resp.message}")
+            logger.info(f"重排 API 失败: code={resp.code}, message={resp.message}")
             raise RuntimeError(f"DashScope rerank 失败: {resp.code} {resp.message}")
 
         # results 已按相关性从高到低排序，含 index；按 index 回原列表取文档
@@ -1487,7 +1485,7 @@ def _expand_to_parents(children: list[Document]) -> list[Document]:
     try:
         rows = parent_store.get(pids)
     except MySQLUnavailable as e:
-        print(f"[父块] 取父块失败，降级为纯子块检索: {e}")
+        logger.warning(f"[父块] 取父块失败，降级为纯子块检索: {e}")
         return children
 
     # 3) 按预算截断。装不下的**跳过**，继续试后面的小父块；遇到就停会白丢内容
@@ -1499,7 +1497,7 @@ def _expand_to_parents(children: list[Document]) -> list[Document]:
         if row is None:
             # 父块缺失（重建中途失败过 / 被人手工删过）时用命中的子块顶上，
             # 绝不能让这一块从结果里静默消失
-            print(f"[父块] {pid} 未找到，降级用命中的子块顶替")
+            logger.info(f"[父块] {pid} 未找到，降级用命中的子块顶替")
             text = child.page_content
             meta = dict(child.metadata)
         else:
@@ -1516,10 +1514,8 @@ def _expand_to_parents(children: list[Document]) -> list[Document]:
         expanded.append(Document(page_content=text, metadata=meta))
         total += len(text)
 
-    print(
-        f"[父块] {len(children)} 个子块 → {len(pids)} 个父块候选 → "
-        f"送出 {len(expanded)} 块（{total} 字）"
-    )
+    logger.info(f"[父块] {len(children)} 个子块 → {len(pids)} 个父块候选 → "
+        f"送出 {len(expanded)} 块（{total} 字）")
     return expanded
 
 
@@ -1607,7 +1603,7 @@ def reordering(query: str, docs: list[Document]) -> list[Document]:
         import traceback
 
         traceback.print_exc()
-        print(f"重排失败，降级为 RRF 默认顺序: {e}")
+        logger.warning(f"重排失败，降级为 RRF 默认顺序: {e}")
         # 降级路径拿不到分数，只按原顺序取 TOP_N（RRF 顺序本身就是按相关性排的）
         reranked = docs[:TOP_N]
 

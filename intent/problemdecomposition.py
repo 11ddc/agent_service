@@ -16,6 +16,9 @@ import re
 
 from dotenv import load_dotenv
 from openai import OpenAI
+import logging
+
+logger = logging.getLogger(__name__)
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
@@ -81,7 +84,7 @@ def decompose(query: str) -> list[str]:
     """当 divide() 为 True 时调用：LLM 拆分子问题；失败降级为规则拆分。"""
     text = ""
     try:
-        print("问题拆分模型调用")
+        logger.info("问题拆分模型调用")
         response = client.responses.create(
             model=_MODEL,
             input=[
@@ -105,7 +108,7 @@ def decompose(query: str) -> list[str]:
         raise ValueError(f"LLM 输出不是 JSON 数组: {cleaned[:200]}")
 
     except Exception as e:
-        print(f"LLM 问题拆分失败，降级规则拆分: {e}")
+        logger.warning(f"LLM 问题拆分失败，降级规则拆分: {e}")
         # 兜底：从返回文本里抓引号中的子问题
         try:
             raw = re.findall(r'["“]([^"”]+)["”]', text)
