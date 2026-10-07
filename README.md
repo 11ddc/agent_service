@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | 检索层（165 条正样本标注集） | 精排后 **R@1 84.8% / R@20 98.2% / MRR 0.901** |
-| 测试 | **528 个用例全绿**，零外部服务（不连 Redis / MySQL / 任何 LLM）；另有 12 个 `integration` 用例需真 MySQL，默认不跑 |
+| 测试 | **572 个用例全绿**，零外部服务（不连 Redis / MySQL / 任何 LLM）；另有 12 个 `integration` 用例需真 MySQL，默认不跑 |
 | 入库 | 167 份文档 / 1761 个子块 / 98.4 秒，含 2 项安全探针 |
 | 技术栈 | FastAPI · LangGraph · Chroma · BM25(jieba) · MySQL · Redis · DashScope · MCP |
 
@@ -27,7 +27,7 @@
 | Tesseract OCR | 可选 | 只影响扫描件 PDF / 文档内嵌图的文字识别 |
 
 > **只想跑测试？** 不需要任何 key、不需要 MySQL / Redis、不需要模型 —— 克隆完直接
-> `pytest` 就是 **528 个用例全绿**（`tests/conftest.py` 会注入占位 key，所有 LLM 调用都走桩，
+> `pytest` 就是 **572 个用例全绿**（`tests/conftest.py` 会注入占位 key，所有 LLM 调用都走桩，
 > 并且**强制拦截一切非回环出网连接**：真实出网 = 测试失败）。
 > 机器上缺 tesseract 或 CJK 字体时，会跳过 3 个扫描件 OCR 用例（是 skip，不是 fail）。
 > 另有 12 个 `integration` 用例（真 MySQL 的认证链路）默认不跑：`pytest -m integration -q`。
@@ -118,6 +118,9 @@ venv\Scripts\python.exe main.py
 
 | 接口 | 说明 |
 |---|---|
+| `GET /health` | **存活探针**（无需鉴权）：版本、运行时长，以及 AUTH/ACL/限流 开关状态 |
+| `GET /ready` | **就绪探针**：MySQL 不可用且认证开启 → 503；Redis 挂了仍就绪（只是降级） |
+| `GET /metrics` | Prometheus 文本格式指标（默认需 admin） |
 | `POST /api/auth/register` | 注册（可用 `AUTH_ALLOW_REGISTRATION=0` 关闭） |
 | `POST /api/auth/login` | 登录，返回访问令牌 + 刷新令牌 |
 | `POST /api/auth/refresh` | 刷新令牌（**轮换**：旧的立即失效） |
@@ -298,7 +301,7 @@ flowchart LR
 | `auth/` | 认证与授权：bcrypt 密码、JWT 访问令牌、刷新令牌轮换、即时撤销、RBAC、审计、首个管理员引导 |
 | `mcp_client.py` | 外部 MCP 服务接入，工具统一命名空间 `mcp__<server>__<tool>` |
 | `eval/` | 语料生成器（固定 seed）、批量入库、检索召回评测脚本 |
-| `tests/` | 528 个用例，全部零外部服务（出网被强制拦截） |
+| `tests/` | 572 个用例，全部零外部服务（出网被强制拦截） |
 
 
 
@@ -323,7 +326,7 @@ my-agent-api/
 ├── tools_agent/            # 知识库工具 + 工具调用模型
 ├── db/                     # MySQL 存储层 + schema.sql
 ├── eval/                   # 语料生成 + 批量入库 + 召回评测
-└── tests/                  # 528 个用例
+└── tests/                  # 572 个用例
 ```
 
 > 下面这些是**运行产物或大文件**，刻意不入库，克隆后按「快速开始」第 3~4 步补上：
