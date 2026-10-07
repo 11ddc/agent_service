@@ -40,6 +40,21 @@ load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 ROOT = Path(__file__).resolve().parent
 
+# ── 调用方身份注入点 ────────────────────────────────────────
+# 身份必须由**服务端（我们）**给出，绝不能从模型生成的工具参数里推导 ——
+# 否则"查一下我的订单"就变成了"查任意人的订单"（IDOR / 枚举）。
+# 走子进程**环境变量**而不是工具参数有两个好处：
+#   1. 模型无法影响子进程的环境；
+#   2. 工具 schema 里不会多出一个"谁是调用方"的字段让模型去填。
+# 真实部署里这个值应当来自认证后的 principal，这里由 graph 节点传入 session。
+# ⚠️ 必须与 mcp_order_data.CALLER_ENV_VAR 一致（tests 里有断言守着）。
+CALLER_ENV_VAR = "MCP_CALLER_ID"
+
+# MCP 调用超时（秒）。服务是**子进程**：它挂住（死循环、卡 I/O、等锁）时不会
+# 自己退出，而调用方是同步图节点 —— 没有超时就会永久占住一个工作线程，
+# 几十个卡死的调用足以让整个 API 停止响应。
+MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "30"))
+
 
 @dataclass(frozen=True)
 class ServerSpec:
@@ -124,9 +139,25 @@ def _default_specs() -> list[ServerSpec]:
     ]
 
 
-def _server_params(spec: ServerSpec) -> StdioServerParameters:
-    """描述如何启动服务端子进程。"""
-    return StdioServerParameters(command=spec.command, args=list(spec.args))
+def _server_params(
+    spec: ServerSpec, caller_id: str | None = None
+) -> StdioServerParameters:
+    """描述如何启动服务端子进程。
+
+    `caller_id` 通过**子进程环境变量**注入（见 CALLER_ENV_VAR）—— 这是本桥
+    唯一被信任的身份来源；工具参数里任何"我是谁"都不作数。
+
+    注意 SDK 的 env 是**合并**到一份白名单之上的
+    （`mcp/client/stdio.py`: `get_default_environment() | (server.env or {})`），
+    所以这里只多传一个身份变量：既不会把 .env 里的密钥带进子进程，
+    也不会丢掉 PATH / SystemRoot 这些子进程启动必需项。
+    """
+    env = {CALLER_ENV_VAR: caller_id} if caller_id else None
+    return StdioServerParameters(
+        command=spec.command,
+        args=list(spec.args),
+        env=env,
+    )
 
 
 def split_namespaced(tool_name: str, specs: list[ServerSpec]):
@@ -152,7 +183,9 @@ async def _list_tools_openai(specs: list[ServerSpec]) -> list[dict]:
     out: list[dict] = []
     for spec in specs:
         try:
-            async with Client(_server_params(spec)) as client:
+            async with Client(
+                _server_params(spec), read_timeout_seconds=MCP_TIMEOUT
+            ) as client:
                 tools_result = await client.list_tools()
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -174,9 +207,19 @@ async def _list_tools_openai(specs: list[ServerSpec]) -> list[dict]:
     return out
 
 
-async def _call_tool_text(spec: ServerSpec, raw_name: str, arguments: dict) -> str:
-    """异步内芯:调用工具,返回文本结果;工具报错(is_error)则抛异常。"""
-    async with Client(_server_params(spec)) as client:
+async def _call_tool_text(
+    spec: ServerSpec,
+    raw_name: str,
+    arguments: dict,
+    caller_id: str | None = None,
+) -> str:
+    """异步内芯:调用工具,返回文本结果;工具报错(is_error)则抛异常。
+
+    `caller_id` 走**子进程环境变量**而不是工具参数：模型伪造不了它。
+    """
+    async with Client(
+        _server_params(spec, caller_id=caller_id), read_timeout_seconds=MCP_TIMEOUT
+    ) as client:
         result = await client.call_tool(raw_name, arguments=arguments)
         if result.is_error:
             raise RuntimeError(f"MCP 工具 {raw_name} 执行失败: {result.content}")
@@ -196,10 +239,22 @@ def _explain(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _run_bridge(coro, what: str):
-    """asyncio.run + 统一拆包:任何底层异常都以带根因的 RuntimeError 抛出。"""
+def _run_bridge(coro, what: str, timeout: float | None = MCP_TIMEOUT):
+    """asyncio.run + 超时 + 统一拆包:任何底层异常都以带根因的 RuntimeError 抛出。
+
+    超时是硬要求:MCP 服务是**子进程**,挂住(死循环/卡 I/O/等锁)时不会自己退出,
+    而调用方是同步图节点 —— 没有超时就会永久占住一个工作线程。
+    `asyncio.wait_for` 触发取消时会走到 `async with Client(...)` 的退出路径,
+    子进程会被清理,不会留下僵尸进程。
+    """
+
+    async def _guarded():
+        return await asyncio.wait_for(coro, timeout=timeout)
+
     try:
-        return asyncio.run(coro)
+        return asyncio.run(_guarded())
+    except TimeoutError as e:
+        raise RuntimeError(f"MCP {what} 超时(超过 {timeout}s),子进程无响应") from e
     except BaseException as e:
         raise RuntimeError(f"MCP {what} 失败,根因 -> {_explain(e)}") from e
 
@@ -209,11 +264,17 @@ def get_mcp_tools_definition() -> list[dict]:
     return _run_bridge(_list_tools_openai(load_server_specs()), "工具列表获取")
 
 
-def call_mcp_tool(tool_name: str, arguments: dict) -> str:
+def call_mcp_tool(
+    tool_name: str, arguments: dict, caller_id: str | None = None
+) -> str:
     """同步:让对应的 MCP 服务执行工具。
 
     tool_name 支持带命名空间(mcp__<server>__<tool>)—— 按 server 路由到正确的
     子进程;不带命名空间的裸名则交给第一个服务(兼容改造前的调用方式)。
+
+    `caller_id` 是**调用方身份**,由 graph 节点从会话传入,经子进程环境变量
+    送达服务端(见 CALLER_ENV_VAR)。它绝不放进 `arguments` —— 那里是模型的地盘,
+    一旦混进去,模型就能自己声明"我是谁"。真实部署应替换为认证后的 principal。
     """
     specs = load_server_specs()
     spec, raw_name = split_namespaced(tool_name, specs)
@@ -228,7 +289,8 @@ def call_mcp_tool(tool_name: str, arguments: dict) -> str:
         spec = specs[0]
 
     return _run_bridge(
-        _call_tool_text(spec, raw_name, arguments or {}), f"工具调用 {raw_name}"
+        _call_tool_text(spec, raw_name, arguments or {}, caller_id=caller_id),
+        f"工具调用 {raw_name}",
     )
 
 

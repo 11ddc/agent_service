@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
@@ -23,9 +24,16 @@ from rag.rag import KnowledgeBaseError, get_status, reordering, retrieve_sync
 
 logger = logging.getLogger(__name__)
 
+# ── 图的步数硬上限 ────────────────────────────────────────────
+# 工具循环 `llm_call ⇄ tool_call` 必须有个上限：不设的话，langgraph 的
+# DEFAULT_RECURSION_LIMIT（10007）就是实际生效值 —— 模型只要反复请求工具，
+# 就能打出上千轮 LLM 调用（每轮都要花钱、都要占住一个工作线程）。
+# `TOOL_MAX` 限的是"工具轮次"，这里限的是"整图步数"，两者互为兜底。
+GRAPH_RECURSION_LIMIT = int(os.getenv("GRAPH_RECURSION_LIMIT", "25"))
+
 # ── MCP 接入点②（新增）：外部 MCP 工具桥，见 tools_agent/mcp_client.py
 # from tools_agent import mcp_client
-from tools_agent.tool_llm import LOCAL_TOOL_MAP, call_zhipu_chat
+from tools_agent.tool_llm import LOCAL_TOOL_MAP, TOOL_MAX, call_zhipu_chat
 
 # ── 非知识库意图的短路回复话术 ────────────────────────────
 SHORT_CIRCUIT_REPLIES = {
@@ -45,6 +53,7 @@ class AgentState(TypedDict):
     contexts: str | None  # 检索得到的答案
     answer: str | None  # 响应
     meta: dict | None  # 元数组数据
+    tool_rounds: int | None  # 工具循环已进行的轮次（硬上限见 GRAPH_RECURSION_LIMIT）
     messages: Annotated[list, add_messages]
 
 
@@ -165,7 +174,12 @@ def tool_call_node(state: AgentState) -> dict:
         # ── MCP 接入点②:外部 MCP 工具(mcp__<server>__<tool>)由 mcp_client 同步执行
         if tool_name.startswith("mcp__"):
             try:
-                result = call_mcp_tool(tool_name, tool_args)  # 同步桥,签名 (name, args)
+                # 身份从**会话**注入（走子进程环境变量），不放进工具参数 ——
+                # 见 mcp_client.CALLER_ENV_VAR。MCP 服务据此只返回该调用方
+                # 名下的数据，模型无法通过参数"换个身份"。
+                result = call_mcp_tool(
+                    tool_name, tool_args, caller_id=state.get("session_id")
+                )
             except Exception as e:
                 print(f"MCP 工具调用失败: {e}")
                 result = f"[MCP 工具执行失败: {e!s}]"
@@ -249,7 +263,9 @@ def llm_call_node(state: AgentState) -> dict:
         )
         print("llm_call_node返回的AIMessage:", new_ai_msg)
 
-        return {"messages": new_ai_msg}
+        # 每进一次 llm_call 就是一轮"模型 ⇄ 工具"协商；tool_continue 用它兜住循环
+        rounds = int(state.get("tool_rounds") or 0) + 1
+        return {"messages": new_ai_msg, "tool_rounds": rounds}
 
     except Exception as e:
         print(f"调用智谱chat模型失败: {e}")
@@ -259,22 +275,37 @@ def llm_call_node(state: AgentState) -> dict:
 
 
 # llm判断是否需要调用工具
-def tool_continue(state: AgentState) -> Literal["tool_call", END]:
+def tool_continue(state: AgentState) -> Literal["tool_call", "data_node"]:
 
     last_msg = state["messages"][-1]
     print("tool_continue检查是否需要调用工具，last_msg:", last_msg)
     # 用 getattr 判空:最后一条可能是 HumanMessage(没有 tool_calls 属性),
     # 直接访问会抛 AttributeError 把整图带崩(原实现就是这么挂的)。
-    if getattr(last_msg, "tool_calls", None):
-        return "tool_call"
-    else:
+    if not getattr(last_msg, "tool_calls", None):
         return "data_node"
+
+    # ⚠️ 工具轮次硬上限：模型每轮都可以继续请求工具（尤其是工具刚回了一条
+    # "执行失败 / 请稍后重试" 之后 —— 它会换个参数再试一次）。没有这个上限，
+    # 循环的唯一终点就是 langgraph 的 DEFAULT_RECURSION_LIMIT（默认 10007），
+    # 也就是上千轮 LLM 调用。超过 TOOL_MAX 就交回 data_node 收尾。
+    if int(state.get("tool_rounds") or 0) >= TOOL_MAX:
+        return "data_node"
+
+    return "tool_call"
 
 
 # 用来和单问题图之间对接数据 和mager一样
 def data_node(state: AgentState) -> dict:
     last_msg = state["messages"][-1]
     answer = last_msg.content if hasattr(last_msg, "content") else ""
+    # 工具轮次已到上限、而模型仍然只想调工具（content 为空）时，必须给一句
+    # 诚实的收尾，而不是把空串交给上层：空 answer 会让 api/chat.py 再调一次
+    # 兜底 Agent（白跑一轮），最终还可能把空字符串发给前端。
+    if not answer and getattr(last_msg, "tool_calls", None):
+        answer = (
+            f"抱歉，这个问题需要查询的步骤超过了上限（{TOOL_MAX} 轮），"
+            f"我没能给出可靠答案。请补充更具体的信息（例如订单号）后重试。"
+        )
     print(f"data_node——answer: {answer}")
     # 返回包含 answer 的字典，更新状态
     return {"answer": answer}
@@ -395,7 +426,11 @@ def multi_loop_node(state: AgentState) -> dict:
             emit({"type": "delta", "content": "\n"})
         # 循环走单问题子图。子图是同步调用、同一个线程 → 子图节点里的 emit()
         # 能直接读到本线程的 emitter，不需要额外透传参数。
-        r = question_graph.invoke({"question": q, "session_id": state["session_id"]})
+        # config 也带上传：每次 invoke 是一份**独立**的步数预算，不带就退回 10007。
+        r = question_graph.invoke(
+            {"question": q, "session_id": state["session_id"]},
+            config={"recursion_limit": GRAPH_RECURSION_LIMIT},
+        )
         parts.append(r.get("answer") or "")
         last_meta = r.get("meta") or last_meta
     return {"answer": "\n".join(parts) or None, "meta": last_meta or {}}

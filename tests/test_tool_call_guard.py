@@ -18,8 +18,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 import agent.graph as g
 
 
-def _state(tool_name: str) -> dict:
+def _state(tool_name: str, session_id: str = "s1") -> dict:
     return {
+        "session_id": session_id,
         "messages": [
             AIMessage(
                 content="",
@@ -27,7 +28,7 @@ def _state(tool_name: str) -> dict:
                     {"name": tool_name, "args": {"query": "x"}, "id": "call_1"}
                 ],
             )
-        ]
+        ],
     }
 
 
@@ -101,18 +102,20 @@ def test_unknown_tool_does_not_leave_dangling_tool_calls():
 def test_mcp_tool_still_executes(monkeypatch):
     calls = []
 
-    def _fake_call(name, args):
-        calls.append((name, args))
+    def _fake_call(name, args, caller_id=None):
+        calls.append((name, args, caller_id))
         return "外部工具结果"
 
     monkeypatch.setattr(g, "call_mcp_tool", _fake_call)
 
     assert _only_message(_state("mcp__weather__get")).content == "外部工具结果"
-    assert calls == [("mcp__weather__get", {"query": "x"})]
+    # 身份必须由节点从**会话**注入（第三个参数），而不是混进工具参数 ——
+    # 否则模型就能自己声明"我是谁"（IDOR）。
+    assert calls == [("mcp__weather__get", {"query": "x"}, "s1")]
 
 
 def test_mcp_tool_failure_degrades_to_message(monkeypatch):
-    def _boom(name, args):
+    def _boom(name, args, caller_id=None):
         raise RuntimeError("外部服务超时")
 
     monkeypatch.setattr(g, "call_mcp_tool", _boom)

@@ -95,12 +95,21 @@ def _format_docs(reranked_docs: list) -> str:
     return "\n\n".join(parts)
 
 
+# 生成客户端的超时。RAG 生成是请求路径上最慢的一步（实测精排 p90 已近 6 秒，
+# 生成更久），但**不能没有上限**：客户端跑在同步图节点里，一次网络卡顿就会把
+# 工作线程长期占住，而 SDK 默认是分钟级超时 + 自带重试。
+GENERATE_TIMEOUT = float(os.getenv("GENERATE_TIMEOUT", "60"))
+GENERATE_MAX_RETRIES = int(os.getenv("GENERATE_MAX_RETRIES", "1"))
+
+
 class RAGGenerator:
     def __init__(self):
         # 创建生成模型客户端
         self.generate_client = OpenAI(
             api_key=os.getenv("GENERATE_API_KEY"),
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            timeout=GENERATE_TIMEOUT,
+            max_retries=GENERATE_MAX_RETRIES,
         )
 
     def generate_answer(self, query: str, reranked_docs: list) -> str:

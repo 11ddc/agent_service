@@ -1,9 +1,11 @@
 import asyncio
+import os
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from body_limit import MAX_UPLOAD_BYTES
 from rag.rag import init_rag
 
 router = APIRouter()
@@ -16,10 +18,31 @@ KNOWLEDGE_BASE_DIR = Path(__file__).resolve().parent.parent / "knowledge_base"
 
 # 单个文件大小上限。这是"别把进程内存和磁盘交给一个未鉴权的请求"的兜底，
 # 不是产品策略——要放开就调这个常量。
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+#
+# ⚠️ 真正的兜底在 `body_limit.py`：那一层在 multipart 解析**之前**按整个请求体
+#    限流（Starlette 对文件字段没有任何大小上限，见该模块的说明）。
+#    这里判的是"单个文件"的精确上限，在 multipart 帧开销之外留了余量。
+#    常量从 body_limit 引入，避免两个上限各处维护、日久漂移。
 
 # 分块读取大小：既不把整个文件读进内存，也不会因为块太小而频繁 await
 _UPLOAD_CHUNK = 1024 * 1024
+
+# Windows 保留设备名：`CON` / `NUL` / `AUX` / `COM1`… 在**任何扩展名下**都会被当成设备。
+# 实测（Windows 11 / CPython 3.12）：
+#   · `NUL.txt` → 写盘"成功"，但磁盘上什么都没有（接口却回报成功 = 静默丢数据）
+#   · `aux.md` / `COM1.pdf` → 写盘直接抛 FileNotFoundError（接口 500）
+# 两种都不该从上传接口漏出去。
+_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _is_reserved_device_name(name: str) -> bool:
+    """按 Windows 的规则判断：取第一个点之前的词干，去掉尾部空格后比大小写不敏感。"""
+    stem = name.split(".", 1)[0].strip().upper()
+    return stem in _RESERVED_STEMS
 
 
 def _safe_filename(raw: str | None) -> str:
@@ -31,15 +54,28 @@ def _safe_filename(raw: str | None) -> str:
     有两个逃逸口：
       - `"../../main.py"`          → 沿路径向上爬到 knowledge_base 之外
       - `"C:/Windows/Temp/x.txt"`  → 绝对路径直接顶掉 save_dir
-    后缀白名单挡不住这两种（`Path("../../a.pdf").suffix == ".pdf"`）。
+      - `"C:evil.pdf"`             → **盘符相对路径**：没有分隔符，上面那套
+        "取最后一段再比对"会放它过去，但 `save_dir / "C:evil.pdf"` 并不在
+        save_dir 下 —— Windows 上 ntpath.join 遇到"另一个盘符"会**整个丢弃**
+        前一段，得到 `Path("C:evil.pdf")`，落盘落在那块盘的当前目录里。
+    后缀白名单挡不住这三种（`Path("../../a.pdf").suffix == ".pdf"`）。
 
     做法：统一分隔符 → 取最后一段 → 要求"取完与原文完全一致"，
     即只接受不含任何目录成分的名字。反斜杠必须显式换掉：在 POSIX 上
     `\\` 不是分隔符，`"..\\..\\x.pdf"` 会被当成一个普通文件名漏过去。
+    另外**冒号一律拒绝**：它同时是盘符分隔符和 NTFS 交换数据流（ADS）的分隔符。
     """
     name = (raw or "").strip()
     leaf = name.replace("\\", "/").rsplit("/", 1)[-1]
     if leaf != name or leaf in {"", ".", ".."}:
+        raise HTTPException(status_code=400, detail=f"非法文件名: {raw!r}")
+    if ":" in leaf or os.path.splitdrive(leaf)[0]:
+        raise HTTPException(status_code=400, detail=f"非法文件名: {raw!r}")
+    # Windows 会**静默**去掉结尾的点和空格：不拦的话 `"报表.pdf."` 实际存成
+    # `"报表.pdf"`，接口回报的名字却不是它，还可能覆盖掉另一次上传。
+    if leaf != leaf.rstrip(". "):
+        raise HTTPException(status_code=400, detail=f"非法文件名: {raw!r}")
+    if _is_reserved_device_name(leaf):
         raise HTTPException(status_code=400, detail=f"非法文件名: {raw!r}")
     return leaf
 
@@ -71,6 +107,13 @@ async def upload_file(file: UploadFile = File(...)):
     save_dir = Path(KNOWLEDGE_BASE_DIR)
     save_dir.mkdir(parents=True, exist_ok=True)  # 确保目录存在
     file_path = save_dir / filename
+
+    # 兜底不变量：拼完之后，最终路径的父目录必须**就是**知识库目录。
+    # 这一条防的不是上面那次校验，而是"将来有人放宽 _safe_filename"的回归 ——
+    # 校验可以演化，但这个不变量不能破。resolve() 会把盘符相对路径
+    # （"C:evil.pdf"）按那块盘的当前目录展开，从而在这里被挡住。
+    if file_path.resolve().parent != save_dir.resolve():
+        raise HTTPException(status_code=400, detail=f"非法文件名: {file.filename!r}")
 
     # 3. 分块落盘到临时文件，最后原子改名：
     #    - 不会把整个文件读进内存（原来 `content = await file.read()` 是全量读）

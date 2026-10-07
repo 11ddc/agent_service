@@ -19,9 +19,16 @@ from openai import OpenAI
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
+# 超时：拆分在同步图节点里被调用（rewrite → splitter，是整条链的第一步），
+# 没有上限的话一次网络卡顿就让请求挂在最开始（SDK 默认分钟级 + 自带重试）。
+SPLIT_TIMEOUT = float(os.getenv("SPLIT_TIMEOUT", "15"))
+SPLIT_MAX_RETRIES = int(os.getenv("SPLIT_MAX_RETRIES", "1"))
+
 client = OpenAI(
     api_key=os.getenv("QIAN_WEN_QUERYSTION_API_KEY"),
     base_url="https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1",
+    timeout=SPLIT_TIMEOUT,
+    max_retries=SPLIT_MAX_RETRIES,
 )
 
 _MODEL = "qwen3.5-flash"

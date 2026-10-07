@@ -18,9 +18,17 @@ load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 TOOL_MAX = 5
 
 
+# 超时：工具调用模型跑在同步图节点里，一轮工具协商可能包含多次调用 ——
+# 没有上限的话一次网络卡顿就占住一个工作线程（SDK 默认分钟级 + 自带重试）。
+ZHIPU_TIMEOUT = float(os.getenv("ZHIPU_TIMEOUT", "30"))
+ZHIPU_MAX_RETRIES = int(os.getenv("ZHIPU_MAX_RETRIES", "1"))
+
+
 zhipu_client = OpenAI(
     api_key=os.getenv("ZHI_PU_API_KEY"),
     base_url="https://open.bigmodel.cn/api/paas/v4/",
+    timeout=ZHIPU_TIMEOUT,
+    max_retries=ZHIPU_MAX_RETRIES,
 )
 
 

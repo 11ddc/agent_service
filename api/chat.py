@@ -11,7 +11,11 @@ from agent.events import (  # 流式事件旁路（同步链路下为空操作�
     reset_emitter,
     set_emitter,
 )
-from agent.graph import agent_node, graph  # LangGraph 编排图（拆分→意图→路由→处理→汇总）
+from agent.graph import (  # LangGraph 编排图（拆分→意图→路由→处理→汇总）
+    GRAPH_RECURSION_LIMIT,
+    agent_node,
+    graph,
+)
 from intent.examples import HANDOFF_RE
 from query_rewrite import aappend_history
 from redis_client import redis_client
@@ -42,7 +46,7 @@ async def servercustomer(query: str, session_id: str) -> str | None:
     count = await redis_client.incr(key)
     await redis_client.expire(key, 600)  # 10分钟滑动窗口
 
-    print("count:", count)
+    logger.debug("转人工计数 session=%s count=%s", session_id, count)
     if count >= 3:
         await redis_client.delete(key)  # 触发后重置，下一次重新累计
         return "正在转人工，请稍候.................."
@@ -70,15 +74,22 @@ def _answer_by_agent(question: str, session_id: str) -> str:
 
 @router.post("/chat")
 async def chat(request: ChatRequest):
-    print("✅ 请求已进入接口！")
-    """同步聊天 — 编排图执行：拆分→意图路由→(短路/RAG/Agent)→汇总"""
+    """同步聊天 — 编排图执行：拆分→意图路由→(短路/RAG/Agent)→汇总
+
+    ⚠️ 这里原本是 `print("✅ 请求已进入接口！")`，写在 docstring **之前**：
+    一来那个字符串就不是 docstring（`chat.__doc__` 一直是 None），二来它带了一个
+    cp936 编码不下的字符 —— stdout 一旦被重定向（日志文件 / 容器 / CI），
+    每个请求都会在这一行抛 UnicodeEncodeError。改成 logger 后既没有编码风险，
+    又留下了请求维度的痕迹（且不再把用户正文写进 stdout）。
+    """
+    logger.info("收到 /chat 请求 session=%s", request.session_id)
     # 转人工检测：先于一切执行，但只附加提示、不短路主流程；
     # Redis 异常时静默降级，聊天照常（不影响当前聊天接口）
     handoff_msg = None
     try:
         handoff_msg = await servercustomer(request.question, request.session_id)
     except Exception as e:
-        print(f"转人工检测失败，忽略: {e}")
+        logger.warning("转人工检测失败，忽略: %s", e)
 
     # 整条「问题拆分→意图识别→按意图路由→处理→汇总」由 LangGraph 编排完成
     try:
@@ -102,12 +113,16 @@ async def chat(request: ChatRequest):
         result = await asyncio.to_thread(
             graph.invoke,
             {"question": request.question, "session_id": request.session_id},
+            # 整图步数上限：工具循环是个环，不设的话 langgraph 按 10007 走
+            {"recursion_limit": GRAPH_RECURSION_LIMIT},
         )
 
         answer = result.get("answer") or ""
         meta = result.get("meta") or {}
 
-        print(f"编排图执行完成，answer: {answer}, meta: {meta}")
+        # 只记会话与 meta，不记 answer 正文：正文既可能含用户隐私，又会让日志
+        # 变得不可检索（原来这一行把整段回答 print 到 stdout）。
+        logger.info("编排图执行完成 session=%s meta=%s", request.session_id, meta)
     except Exception as e:
         # 这里必须留痕：走到这条分支意味着整张编排图挂了，用户拿到的是 Agent
         # 单问单答（没有检索、没有拆分）。以前是 print，INFO 级日志里查不到。
@@ -159,7 +174,7 @@ def _run_graph_with_emitter(emitter, payload: dict):
     """
     token = set_emitter(emitter)
     try:
-        return graph.invoke(payload)
+        return graph.invoke(payload, {"recursion_limit": GRAPH_RECURSION_LIMIT})
     finally:
         reset_emitter(token)
 
@@ -219,7 +234,7 @@ async def chat_stream(request: ChatRequest):
             )
             emitter({"type": "done"})
         except Exception as e:
-            print(f"流式编排图执行失败: {e}")
+            logger.warning("流式编排图执行失败: %s", e)
             emitter({"type": "error", "message": f"{e!s}"})
         finally:
             # 哨兵：无论成功还是失败都必须发，否则下面的生成器会永久 await

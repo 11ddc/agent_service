@@ -22,9 +22,20 @@ MCP 订单服务的后端。它**不连任何真实系统**，数据是进程内
 今天答"运输正常"、明天答"运输超期"，测试也会随日期漂移。
 """
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+
+# ── 调用方身份 ──────────────────────────────────────────────
+# 身份来自 MCP 服务**子进程的环境变量**，由 mcp_client.call_mcp_tool 注入；
+# 它绝不能来自工具参数 —— 模型能控制的只有 order_no 之类的业务标识，
+# 而"你是谁"必须由服务端自己确定。
+# ⚠️ 必须与 mcp_client.CALLER_ENV_VAR 一致（tests 里有断言守着）。
+CALLER_ENV_VAR = "MCP_CALLER_ID"
+
+# 无法确认身份时的统一话术（失败关闭：宁可拒绝查询，也不返回数据）
+UNIDENTIFIED = "无法确认你的身份，暂时不能查询订单。请转人工客服核实后处理。"
 
 # 订单号格式：ORD-YYYYMMDD-NNN
 ORDER_NO_RE = re.compile(r"^ORD-\d{8}-\d{3}$")
@@ -163,8 +174,81 @@ def mask_phone(phone: str) -> str:
     return f"{p[:3]}****{p[-4:]}" if len(p) >= 7 else "***"
 
 
+# ── 客户与订单归属 ──────────────────────────────────────────
+# mock 环境下客户号**由订单数据本身推导**，避免"客户清单 + 订单清单"两份数据漂移。
+_CUSTOMER_PHONES: dict[str, str] = {
+    f"C{i}": phone
+    for i, phone in enumerate(sorted({o.phone for o in _ORDERS.values()}), 1)
+}
+
+
+def customer_id_for_phone(phone: object) -> str | None:
+    """手机号 → 客户号。
+
+    只给测试与演示用。真实系统里"手机号 → 客户"是认证层的事，
+    **不能**作为工具参数暴露给模型（那正是原来 query_recent_orders(phone) 的问题）。
+    """
+    key = str(phone or "").strip()
+    for cid, p in _CUSTOMER_PHONES.items():
+        if p == key:
+            return cid
+    return None
+
+
+# 演示模式默认客户：挑**拥有示例订单 ORD-20250820-001 的那个客户**，
+# 让 README / 文档里的示例订单在演示模式下真能查到（而不是写死一个名字）。
+DEFAULT_CUSTOMER_ID = customer_id_for_phone(_ORDERS["ORD-20250820-001"].phone)
+
+# ── 单租户演示开关 ──────────────────────────────────────────
+# 本仓库**没有认证层**，所以"principal → 客户号"这一步只能给一个诚实的占位：
+#   · 打开（默认）= 所有调用方都映射到同一个演示客户 → 模型/客户端都**无法选择**
+#     "查谁"，工具链端到端可用，拿来演示与回归；
+#   · 关闭 = 认不出调用方就**失败关闭**，不返回任何数据。
+# 真实部署必须关掉它，由认证层把 principal 映射成客户号。
+DEMO_ENV_VAR = "ORDER_DEMO_SINGLE_TENANT"
+
+
+def _demo_mode() -> bool:
+    return (os.getenv(DEMO_ENV_VAR) or "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+
+
+def resolve_caller(caller_id: object) -> str | None:
+    """调用方身份 → 客户号；无法确定时返回 None（调用方必须失败关闭）。
+
+    注意这里**不**对 caller_id 做哈希之类的"派生"：caller_id 是客户端可控的
+    （session id 由请求方给出），用可控输入派生客户号等于让调用方自选客户，
+    那是安全剧场，不是隔离。
+    """
+    key = str(caller_id or "").strip()
+    if key in _CUSTOMER_PHONES:
+        return key
+    if _demo_mode():
+        return DEFAULT_CUSTOMER_ID
+    return None
+
+
+def _not_found(no: str) -> str:
+    """统一的"查不到"话术。
+
+    ⚠️ 归属校验失败也必须走这一句：如果"这不是你的订单"和"订单不存在"返回
+    不同文案，就等于白送了一个"探测某个订单号是否存在"的接口。
+    """
+    return (
+        f"查不到订单号 {no}。请确认订单号是否输入有误；"
+        f"若确实找不到，可以转人工客服核实。"
+    )
+
+
 def _find(raw: object) -> tuple[Order | None, str | None]:
-    """返回 (订单, 错误话术)。格式错与查不到是**两种不同的**错误。"""
+    """返回 (订单, 错误话术)。格式错与查不到是**两种不同的**错误。
+
+    这里只判格式与存在性，**不判归属** —— 归属由 `_owned` 负责。
+    """
     no = normalize_order_no(raw)
     if not ORDER_NO_RE.match(no):
         return None, (
@@ -173,10 +257,28 @@ def _find(raw: object) -> tuple[Order | None, str | None]:
         )
     order = _ORDERS.get(no)
     if order is None:
-        return None, (
-            f"查不到订单号 {no}。请确认订单号是否输入有误；"
-            f"若用户不记得订单号，可以改用下单手机号查询最近订单。"
-        )
+        return None, _not_found(no)
+    return order, None
+
+
+def _owned(raw: object, customer_id: object) -> tuple[Order | None, str | None]:
+    """取订单并**按调用方身份校验归属**。
+
+    三种情形：
+    - `customer_id is None`：**未绑定身份**。只有单测/演示**直接调用数据层**
+      会走这条路径；服务端（mcp_order_server）永远会传身份，模型碰不到它；
+    - 身份无法确定（演示模式关闭且认不出调用方）：**失败关闭**，不返回任何数据；
+    - 订单不属于该身份：话术与"不存在"完全一致，不泄露存在性。
+    """
+    order, err = _find(raw)
+    if order is None or customer_id is None:
+        return order, err
+
+    customer = resolve_caller(customer_id)
+    if customer is None:
+        return None, UNIDENTIFIED
+    if order.phone != _CUSTOMER_PHONES[customer]:
+        return None, _not_found(normalize_order_no(raw))
     return order, None
 
 
@@ -196,9 +298,12 @@ def _today(today: date | None) -> date:
 # ── 订单详情 ────────────────────────────────────────────────
 
 
-def describe_order(raw: object) -> str:
-    """订单详情。（不需要时钟：这里没有依赖"今天"的判断）"""
-    order, err = _find(raw)
+def describe_order(raw: object, customer_id: object = None) -> str:
+    """订单详情。（不需要时钟：这里没有依赖"今天"的判断）
+
+    `customer_id` 是调用方身份，只用于**归属校验**；None = 未绑定（单测/演示用）。
+    """
+    order, err = _owned(raw, customer_id)
     if order is None:
         return err
 
@@ -225,8 +330,10 @@ def describe_order(raw: object) -> str:
 # ── 物流进度 ────────────────────────────────────────────────
 
 
-def describe_logistics(raw: object, today: date | None = None) -> str:
-    order, err = _find(raw)
+def describe_logistics(
+    raw: object, customer_id: object = None, today: date | None = None
+) -> str:
+    order, err = _owned(raw, customer_id)
     if order is None:
         return err
 
@@ -263,8 +370,10 @@ def describe_logistics(raw: object, today: date | None = None) -> str:
 # ── 退款进度 ────────────────────────────────────────────────
 
 
-def describe_refund(raw: object, today: date | None = None) -> str:
-    order, err = _find(raw)
+def describe_refund(
+    raw: object, customer_id: object = None, today: date | None = None
+) -> str:
+    order, err = _owned(raw, customer_id)
     if order is None:
         return err
 
@@ -295,31 +404,47 @@ def describe_refund(raw: object, today: date | None = None) -> str:
     return "\n".join(lines)
 
 
-# ── 按手机号查最近订单（用户往往不记得订单号）──────────────
+# ── 按调用方身份查最近订单（用户往往不记得订单号）────────────
+
+# `limit` 是模型可以填的数：不设上限时，一个"给我列出最近 10000 笔"就能
+# 把整张表灌进模型上下文。
+_MAX_RECENT_LIMIT = 20
 
 
 def describe_recent_orders(
-    phone: object, limit: int = 3, today: date | None = None
+    limit: int = 3, customer_id: object = None, today: date | None = None
 ) -> str:
-    key = str(phone or "").strip()
-    if not key:
-        return "需要提供下单时使用的手机号，才能查询最近订单。"
+    """列出**当前调用方名下**的最近订单。
 
-    hits = sorted(
-        (o for o in _ORDERS.values() if o.phone == key),
-        key=lambda o: o.created_on,
-        reverse=True,
-    )[: max(1, int(limit))]
+    ⚠️ 这里刻意**不接受手机号参数**。以前是 `describe_recent_orders(phone)`，
+    而 phone 由模型填写 —— 那等于开放了一个"按手机号枚举他人订单"的接口。
+    现在"查谁"只由服务端身份（`customer_id`）决定，模型只能决定"查几笔"。
+    """
+    if customer_id is None:
+        # 未绑定身份：仅单测/演示**直调数据层**走这条路径（服务端永远会传身份）
+        pool = list(_ORDERS.values())
+    else:
+        customer = resolve_caller(customer_id)
+        if customer is None:
+            return UNIDENTIFIED
+        phone = _CUSTOMER_PHONES[customer]
+        pool = [o for o in _ORDERS.values() if o.phone == phone]
+
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        n = 3
+    n = max(1, min(n, _MAX_RECENT_LIMIT))
+
+    hits = sorted(pool, key=lambda o: o.created_on, reverse=True)[:n]
 
     if not hits:
-        return f"查不到手机号 {mask_phone(key)} 名下的订单，请让用户核对手机号。"
+        return "名下没有查到订单。请让用户核对下单账号，或转人工核实。"
 
-    lines = [f"手机号 {mask_phone(key)} 名下最近的 {len(hits)} 笔订单："]
+    lines = [f"名下最近的 {len(hits)} 笔订单："]
     lines += [
         f"- {o.order_no}｜{o.status}｜{_fmt(o.created_on)}｜¥{o.amount:.2f}"
         for o in hits
     ]
-    lines.append(
-        "（说明：真实系统需先做身份校验才能返回他人订单，此处为模拟数据。）"
-    )
+    lines.append("（说明：本工具只返回当前调用方名下的订单，不接受手机号参数。）")
     return "\n".join(lines)

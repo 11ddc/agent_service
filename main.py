@@ -66,6 +66,7 @@ preflight()
 import uvicorn  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 
+from body_limit import add_body_limit  # noqa: E402
 from cors import setup_cors  # noqa: E402
 from router.router import register_routers  # noqa: E402
 
@@ -90,10 +91,17 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # 创建 FastAPI 应用实例
 app = FastAPI(title="我的智能问答系统 API", version="1.0.0")
 
-# 1. 配置 CORS
+# 1. 请求体上限：必须在 multipart 解析**之前**生效，否则超限请求会先被完整
+#    缓冲到内存/临时盘才拿到 413（详见 body_limit.py）
+add_body_limit(app)
+
+# 2. 配置 CORS。
+#    ⚠️ 顺序有讲究：Starlette 里**后加的在最外层**。CORS 必须比请求体上限更靠外，
+#    否则"按 Content-Length 直接拒掉"的那条 413 不会带上 CORS 头，
+#    浏览器会把前端看到的错误变成 CORS 报错而不是 413。
 setup_cors(app)
 
-# 2. 将注册封装好的路由，以函数的形式挂载到 FastAPI 实例上
+# 3. 将注册封装好的路由，以函数的形式挂载到 FastAPI 实例上
 register_routers(app)
 
 #

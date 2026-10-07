@@ -16,6 +16,9 @@ from datetime import date
 import pytest
 
 from mcp_order_data import (
+    _MAX_RECENT_LIMIT,
+    DEMO_ENV_VAR,
+    customer_id_for_phone,
     describe_logistics,
     describe_order,
     describe_recent_orders,
@@ -146,28 +149,89 @@ def test_refund_rejected_explains_reason():
     assert len(out) > 20  # 不能只回一个状态词
 
 
-# ── 5. 按手机号找订单（真实场景：用户不知道自己的订单号）──
+# ── 5. 按调用方身份找订单（真实场景：用户不知道自己的订单号）──
 
 
 def test_recent_orders_are_limited_to_the_newest_ones():
-    out = describe_recent_orders("13800001111", limit=2, today=TODAY)
+    out = describe_recent_orders(
+        limit=2, customer_id=customer_id_for_phone("13800001111"), today=TODAY
+    )
 
-    # 该手机号名下有 3 单，limit=2 必须给出**最新的两单**，且不泄露最旧那单
+    # 该客户名下有 3 单，limit=2 必须给出**最新的两单**，且不泄露最旧那单
     assert "ORD-20250828-003" in out
     assert "ORD-20250825-002" in out
     assert "ORD-20250820-001" not in out
 
 
-def test_recent_orders_unknown_phone_says_none_found():
-    out = describe_recent_orders("19900000000", today=TODAY)
+def test_recent_orders_fails_closed_when_demo_mode_is_off(monkeypatch):
+    """关掉单租户演示模式后，**认不出的调用方必须失败关闭**。
 
-    assert "没有" in out or "查不到" in out
+    数据层在 customer_id=None（未绑定）时是宽松的，那是给单测直调的路径；
+    身份一旦给出却认不出来，就绝不能退回"不过滤"。
+    """
+    monkeypatch.setenv(DEMO_ENV_VAR, "0")
+
+    out = describe_recent_orders(customer_id="C-不存在", today=TODAY)
+
+    assert "身份" in out or "转人工" in out
+    assert "ORD-" not in out
 
 
-def test_recent_orders_masks_phone():
-    out = describe_recent_orders("13800001111", today=TODAY)
+def test_demo_mode_maps_every_caller_to_one_customer(monkeypatch):
+    """没有认证层时，演示模式把所有调用方映射到**同一个**客户。
+
+    这样模型和客户端都选不了"查谁"（选了也是同一个客户），工具链仍然可用；
+    真实部署应当关掉这个开关并接上认证层。
+    """
+    monkeypatch.delenv(DEMO_ENV_VAR, raising=False)
+
+    a = describe_recent_orders(customer_id="session-aaa", today=TODAY)
+    b = describe_recent_orders(customer_id="session-bbb", today=TODAY)
+
+    assert a == b, "演示模式下不同会话必须看到同一份数据（无法自选客户）"
+    assert "ORD-" in a
+
+    # 而**已知客户号**仍然走严格归属：换个客户看到的就是另一份
+    other = describe_recent_orders(
+        customer_id=customer_id_for_phone("13900002222"), today=TODAY
+    )
+    assert a != other
+
+
+def test_orders_fail_closed_when_demo_mode_is_off(monkeypatch):
+    """同一个开关对订单详情也必须生效，不能只作用于"最近订单"。"""
+    monkeypatch.setenv(DEMO_ENV_VAR, "0")
+
+    out = describe_order("ORD-20250820-001", customer_id="session-xyz")
+
+    assert "身份" in out or "转人工" in out
+    assert "已签收" not in out
+
+
+def test_recent_orders_only_returns_the_callers_own_orders():
+    """换一个客户身份，看不到别人的订单。"""
+    out = describe_recent_orders(
+        customer_id=customer_id_for_phone("13900002222"), today=TODAY
+    )
+
+    assert "ORD-20250820-001" not in out  # 那单属于 13800001111
+
+
+def test_recent_orders_never_echoes_a_phone_number():
+    out = describe_recent_orders(
+        customer_id=customer_id_for_phone("13800001111"), today=TODAY
+    )
 
     assert "13800001111" not in out
+
+
+def test_recent_orders_caps_model_supplied_limit():
+    """`limit` 是模型能填的数，必须有上限，否则能把整张表灌进上下文。"""
+    out = describe_recent_orders(
+        limit=10**6, customer_id=customer_id_for_phone("13800001111"), today=TODAY
+    )
+
+    assert out.count("ORD-") <= _MAX_RECENT_LIMIT
 
 
 # ── 6. 确定性 ───────────────────────────────────────────────

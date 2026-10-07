@@ -12,12 +12,21 @@ from tools_agent.kb_tools import KB_TOOLS
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env(键名不会被 \ufeff 污染)
 
 # ── 初始化模型（全局单例）────────────────────────────────
+# ⚠️ 必须限时：兜底 Agent 是在**同步图节点**里被调用的（由 api/chat.py 丢进
+#    线程池），没有超时的话，一次网络卡顿就会长期占住一个工作线程 ——
+#    线程池被占满之后整个服务就不再回应任何请求。OpenAI SDK 的默认超时是
+#    分钟级、且自带重试，这里显式收紧。
+AGENT_LLM_TIMEOUT = float(os.getenv("AGENT_LLM_TIMEOUT", "60"))
+AGENT_LLM_MAX_RETRIES = int(os.getenv("AGENT_LLM_MAX_RETRIES", "1"))
+
 model = ChatOpenAI(
     model="deepseek-chat",
     base_url="https://api.deepseek.com/v1",
     api_key=os.getenv("DEEPSEEK_API_KEY"),
     # 概率分布 越高越容易胡言乱语
     temperature=0.7,
+    timeout=AGENT_LLM_TIMEOUT,  # 同步节点必须限时
+    max_retries=AGENT_LLM_MAX_RETRIES,
 )
 
 

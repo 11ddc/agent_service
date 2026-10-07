@@ -7,15 +7,30 @@
 或者客户端的命名空间对不上导致工具能列出却调不动 —— 两者都不报错。
 """
 import asyncio
+import re
 
 import pytest
 
+import mcp_order_data
 import mcp_order_server
 
 
 def _tools() -> list:
     """用公开 API 取工具清单（不碰私有属性）。"""
     return asyncio.run(mcp_order_server.mcp.list_tools())
+
+
+@pytest.fixture(autouse=True)
+def _default_caller(monkeypatch):
+    """默认注入一个**已知客户**身份（示例订单 ORD-20250820-001 的持有人）。
+
+    服务端现在要求身份：拿不到就失败关闭（这是刻意的）。大多数用例关心的是
+    "接线"，所以统一给一个合法身份；个别用例再覆盖或删除它。
+    """
+    monkeypatch.setenv(
+        mcp_order_data.CALLER_ENV_VAR,
+        mcp_order_data.customer_id_for_phone("13800001111"),
+    )
 
 
 def test_server_name_matches_the_namespace_used_by_the_client():
@@ -44,14 +59,110 @@ def test_exposes_exactly_the_expected_tools():
         ("query_order", ["order_no"]),
         ("query_logistics", ["order_no"]),
         ("query_refund", ["order_no"]),
-        ("query_recent_orders", ["phone"]),
+        # query_recent_orders 现在**不接受任何"查谁"的参数**：调用方身份由服务端
+        # 注入，模型只能选 limit（有默认值，所以整个工具没有必填项）。
+        ("query_recent_orders", []),
     ],
 )
 def test_tool_schema_requires_the_right_arguments(tool_name, required):
     """参数 schema 来自类型注解 —— 注解写错，模型就会传错参数名。"""
     tool = next(t for t in _tools() if t.name == tool_name)
 
-    assert tool.input_schema["required"] == required
+    assert tool.input_schema.get("required", []) == required
+
+
+def test_order_tools_never_expose_a_customer_identifier():
+    """回归：订单工具的 schema 里**不能**出现 phone / 客户号 / 身份字段。
+
+    以前 query_recent_orders 的入参是 `phone: str` —— 那等于给模型一个
+    "按手机号枚举他人订单"的入口。身份必须由服务端注入（见 mcp_client 的
+    CALLER_ENV_VAR），永远不出现在工具参数里。
+    """
+    forbidden = {"phone", "customer_id", "caller", "caller_id", "user_id", "session_id"}
+
+    for tool in _tools():
+        props = set((tool.input_schema or {}).get("properties") or {})
+        leaked = props & forbidden
+        assert not leaked, f"{tool.name} 暴露了身份类参数: {leaked}"
+
+
+def test_tools_fail_closed_when_identity_is_missing(monkeypatch):
+    """没有身份时必须**拒绝返回数据**。
+
+    这条守卫挡的是"客户端忘了注入身份"：数据层的 customer_id=None 是
+    "不过滤"的宽松路径（只该给单测直调用），绝不能从服务端走下去。
+    """
+    monkeypatch.delenv(mcp_order_data.CALLER_ENV_VAR, raising=False)
+
+    out = mcp_order_server.query_order("ORD-20250820-001")
+
+    assert "身份" in out or "转人工" in out
+    assert "已签收" not in out, "没有身份不得拿到任何订单数据"
+
+
+def test_tools_fail_closed_when_demo_mode_is_off(monkeypatch):
+    """关掉单租户演示模式后，会话 id 这种"认不出的身份"必须失败关闭。"""
+    monkeypatch.setenv(mcp_order_data.DEMO_ENV_VAR, "0")
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "session-abc")
+
+    out = mcp_order_server.query_order("ORD-20250820-001")
+
+    assert "身份" in out or "转人工" in out
+    assert "已签收" not in out
+
+
+def test_demo_mode_keeps_the_tool_chain_usable(monkeypatch):
+    """演示模式（默认）下，真实的 session id 也能拿到演示客户的数据 —— 单租户。
+
+    这是"安全"与"可用"的折中：没有认证层时不假装能区分用户，而是让所有调用方
+    看到同一份数据，并把开关与前提写进文档（.env.example / README）。
+    """
+    monkeypatch.delenv(mcp_order_data.DEMO_ENV_VAR, raising=False)
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "7f3a-session-uuid")
+
+    out = mcp_order_server.query_order("ORD-20250820-001")
+
+    assert "ORD-20250820-001" in out
+
+
+def test_tools_only_return_the_callers_own_orders(monkeypatch):
+    """身份来自子进程环境变量，不是工具参数 —— 换成别人只能拿到"查不到"。"""
+    mine = mcp_order_data.customer_id_for_phone("13800001111")
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, mine)
+
+    assert "ORD-20250820-001" in mcp_order_server.query_order("ORD-20250820-001")
+
+    # 换一个客户身份去查同一张单：必须拿不到任何字段，
+    # 且话术与"订单根本不存在"完全同形（否则就成了存在性探测接口）
+    other = mcp_order_data.customer_id_for_phone("13900002222")
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, other)
+    stolen = mcp_order_server.query_order("ORD-20250820-001")
+    missing = mcp_order_server.query_order("ORD-19990101-999")
+
+    assert "已签收" not in stolen
+    assert "¥" not in stolen
+    assert stolen.replace("ORD-20250820-001", "X") == missing.replace(
+        "ORD-19990101-999", "X"
+    )
+
+
+def test_recent_orders_cannot_be_redirected_by_a_positional_argument(monkeypatch):
+    """旧接口的 `phone` 参数已经删掉：就算硬塞一个手机号进来，也改不了"查谁"。
+
+    这里传的是**别人**的手机号。因为服务端只认环境变量里的身份，
+    两次调用的订单集合必须完全一致 —— 参数会影响不到查询对象。
+    """
+    mine = mcp_order_data.customer_id_for_phone("13800001111")
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, mine)
+
+    def _orders(text: str) -> set:
+        return set(re.findall(r"ORD-\d{8}-\d{3}", text))
+
+    without = mcp_order_server.query_recent_orders()
+    with_phone = mcp_order_server.query_recent_orders("13900002222")
+
+    assert _orders(without), "至少应该查到自己名下的订单"
+    assert _orders(with_phone) == _orders(without)
 
 
 @pytest.mark.parametrize("tool", _tools(), ids=lambda t: t.name)

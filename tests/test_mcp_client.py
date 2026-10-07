@@ -183,7 +183,9 @@ def _fake_client_factory(by_script: dict):
     """按启动脚本名给出行为：工具名列表，或一个要抛的异常。"""
 
     class _Ctx:
-        def __init__(self, params):
+        def __init__(self, params, **_kwargs):
+            # Client(server, read_timeout_seconds=...) 会多带关键字参数，
+            # 这里只关心"起的是哪个脚本"
             self._script = Path(params.args[-1]).name
 
         async def __aenter__(self):
@@ -204,7 +206,7 @@ def _fake_client_factory(by_script: dict):
                 ]
             )
 
-    return lambda params: _Ctx(params)
+    return lambda params, **_kwargs: _Ctx(params)
 
 
 def test_one_broken_server_does_not_hide_the_others(monkeypatch):
