@@ -9,6 +9,26 @@ from dotenv import load_dotenv
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 # ══════════════════════════════════════════════════════════════
+# stdout / stderr 编码兜底
+#
+# 项目里还有大量 print（正在按评审报告的 A5 逐步收编成 logging），而 Windows 上
+# stdout 一旦被重定向（写日志文件 / 容器 / CI），编码就是 cp936 —— 打印 emoji、
+# `¥`、`⚠` 这类字符会直接抛 UnicodeEncodeError。
+#
+# 这不是"理论风险"：`¥`（U+00A5）正是订单金额的货币符号、`⚠` 是运输超期提示，
+# 也就是说**业务数据本身**就可能让一行日志把请求打成 500
+# （实测：`agent/graph.py` 打印问题文本、`tools_agent/tool_llm.py` 打印工具返回时都会触发）。
+#
+# 这里把两个流设成 UTF-8 + errors="replace"：最坏情况是日志里出现一个替代字符，
+# 而不是请求失败。根治办法仍是把 print 换成 logging（A5）。
+# ══════════════════════════════════════════════════════════════
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - 流被替换过时可能没有 reconfigure
+        pass
+
+# ══════════════════════════════════════════════════════════════
 # 启动前自检：这 4 个 key 是**import 期硬依赖**
 #
 # 为什么要有这一段：agent/graph.py 在模块级就 `Generator = RAGGenerator()`、

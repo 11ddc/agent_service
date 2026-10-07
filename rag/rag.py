@@ -5,6 +5,7 @@ RAG 检索模块 —— 只负责文档加载、向量化、检索。
 
 import asyncio
 import io
+import logging
 import os
 import re
 import threading
@@ -53,7 +54,15 @@ from rag.vision_ocr import hybrid_image_text
 if config.TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
 
+# ⚠️ OCR 必须限时：pytesseract 是**起子进程**调用 tesseract，默认没有超时。
+# 一个精心构造的 PDF 就能让 tesseract 长时间不返回，而这个调用在
+# `POST /api/upload` 的入库路径上 —— 等于把上传接口挂死（工作线程被占住）。
+# 默认 60 秒：正常页面几百毫秒到几秒，超过 60 秒基本可以判定是异常输入。
+_OCR_TIMEOUT = int(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
+
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
+
+logger = logging.getLogger(__name__)
 
 reranker = LocalReranker()
 
@@ -313,7 +322,7 @@ def _ocr_image_section(
         # with 是为了**关闭文件句柄**：原来直接 Image.open(路径) 交给 tesseract，
         # 句柄一直不释放，图多的 PDF 会累积 fd
         with Image.open(io.BytesIO(img_bytes)) as im:
-            ocr_text = pytesseract.image_to_string(im, lang=OCR_LANG)
+            ocr_text = pytesseract.image_to_string(im, lang=OCR_LANG, timeout=_OCR_TIMEOUT)
     except Exception as e:  # OCR 挂掉不应该毁掉整个文档，交给视觉模型兜底
         print(f"[OCR] {label} 本地识别失败，改由视觉模型兜底: {e!r}")
         ocr_text = ""
@@ -415,9 +424,15 @@ def _ocr_docx_image(
     img_path.write_bytes(blob)
 
     try:
-        text = pytesseract.image_to_string(Image.open(img_path), lang="chi_sim+eng")
+        # `Image.open` 必须显式关闭：原来把打开的图片内联传给 pytesseract，
+        # 句柄一直不释放（同文件的 _ocr_image_section 早已修过同样的问题）——
+        # 入库一批带图文档会累积文件描述符，Windows 上还会锁住中间图。
+        with Image.open(img_path) as im:
+            text = pytesseract.image_to_string(
+                im, lang="chi_sim+eng", timeout=_OCR_TIMEOUT
+            )
     except Exception as e:
-        print(f"OCR 识别图片 {img_path.name} 失败: {e}")
+        logger.warning("OCR 识别图片 %s 失败: %s", img_path.name, e)
         text = ""  # 本地 OCR 失败不跳过：留给视觉模型补救
     # 视觉模型增强（混合方案）:OCR 为空时补 Qwen3-VL,见 rag/vision_ocr.py
     text = hybrid_image_text(blob, text, source=str(img_path))

@@ -27,6 +27,7 @@ from mcp_order_data import (
     describe_order,
     describe_recent_orders,
     describe_refund,
+    resolve_principal,
 )
 
 # 服务端名字：客户端据此拼命名空间 mcp__order__<tool>，
@@ -37,14 +38,22 @@ mcp = MCPServer(SERVER_NAME)
 
 
 def _caller() -> str | None:
-    """当前调用方身份。
+    """当前调用方的 **principal**（账号/会话标识）。
 
     ⚠️ 来源是**本进程的环境变量**（由 `mcp_client.call_mcp_tool` 注入），
-    而不是工具参数 —— 模型无法影响子进程的环境，所以也无法伪造成别人。
-    真实部署里这个值应当来自认证后的 principal；本仓库由 graph 节点传入会话 id，
-    再由数据层的 `resolve_caller` 决定映射（演示模式 = 单租户）。
+    不是工具参数 —— 模型无法影响子进程的环境，所以也无法伪造成别人。
     """
     return (os.getenv(CALLER_ENV_VAR) or "").strip() or None
+
+
+def _customer() -> str | None:
+    """把 principal 解析成**客户号**；解析不出来就失败关闭。
+
+    解析只认服务端来源（演示模式 / ORDER_PRINCIPAL_MAP / 将来的认证层）。
+    这里刻意不接受"principal 本身长得像客户号"这种推断 —— 因为 principal
+    的一端可能是客户端可控的 session_id，采信它等于让调用方自选客户。
+    """
+    return resolve_principal(_caller())
 
 
 @mcp.tool()
@@ -67,12 +76,12 @@ def query_order(order_no: str) -> str:
 
     返回：订单详情文本；订单号格式错误或查不到时会明确说明是哪一种。
     """
-    caller = _caller()
-    if caller is None:
-        # 拿不到身份就**失败关闭**：数据层的 customer_id=None 是"不过滤"的
+    customer = _customer()
+    if customer is None:
+        # 解析不出身份就**失败关闭**：数据层的 customer_id=None 是"不过滤"的
         # 宽松路径（只该给单测直调用），绝不能从这里走下去。
         return UNIDENTIFIED
-    return describe_order(order_no, customer_id=caller)
+    return describe_order(order_no, customer_id=customer)
 
 
 @mcp.tool()
@@ -92,10 +101,10 @@ def query_logistics(order_no: str) -> str:
 
     返回：物流进度文本；订单未发货时会说明原因，在途超期时会给出建议。
     """
-    caller = _caller()
-    if caller is None:
+    customer = _customer()
+    if customer is None:
         return UNIDENTIFIED
-    return describe_logistics(order_no, customer_id=caller)
+    return describe_logistics(order_no, customer_id=customer)
 
 
 @mcp.tool()
@@ -115,10 +124,10 @@ def query_refund(order_no: str) -> str:
 
     返回：退款进度文本；该订单没有退款记录时会明确说明。
     """
-    caller = _caller()
-    if caller is None:
+    customer = _customer()
+    if customer is None:
         return UNIDENTIFIED
-    return describe_refund(order_no, customer_id=caller)
+    return describe_refund(order_no, customer_id=customer)
 
 
 @mcp.tool()
@@ -141,10 +150,10 @@ def query_recent_orders(limit: int = 3) -> str:
 
     返回：订单号 + 状态 + 下单时间 + 金额的列表。
     """
-    caller = _caller()
-    if caller is None:
+    customer = _customer()
+    if customer is None:
         return UNIDENTIFIED
-    return describe_recent_orders(limit=limit, customer_id=caller)
+    return describe_recent_orders(limit=limit, customer_id=customer)
 
 
 if __name__ == "__main__":

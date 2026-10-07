@@ -22,6 +22,8 @@ MCP 订单服务的后端。它**不连任何真实系统**，数据是进程内
 今天答"运输正常"、明天答"运输超期"，测试也会随日期漂移。
 """
 
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -199,13 +201,15 @@ def customer_id_for_phone(phone: object) -> str | None:
 # 让 README / 文档里的示例订单在演示模式下真能查到（而不是写死一个名字）。
 DEFAULT_CUSTOMER_ID = customer_id_for_phone(_ORDERS["ORD-20250820-001"].phone)
 
-# ── 单租户演示开关 ──────────────────────────────────────────
-# 本仓库**没有认证层**，所以"principal → 客户号"这一步只能给一个诚实的占位：
-#   · 打开（默认）= 所有调用方都映射到同一个演示客户 → 模型/客户端都**无法选择**
-#     "查谁"，工具链端到端可用，拿来演示与回归；
-#   · 关闭 = 认不出调用方就**失败关闭**，不返回任何数据。
-# 真实部署必须关掉它，由认证层把 principal 映射成客户号。
+# ── principal → 客户号 ─────────────────────────────────────
+# 本仓库没有真正的认证层，"principal → 业务客户号"这一步给出两个**服务端**来源：
+#   · 演示模式（单租户）：所有 principal 都映射到同一个演示客户；
+#   · ORDER_PRINCIPAL_MAP：显式映射表（真实部署应由认证层完成这件事）。
+# 真实部署必须关掉演示模式；`AUTH_*` 接好之后这里就换成"账号 → 客户号"。
 DEMO_ENV_VAR = "ORDER_DEMO_SINGLE_TENANT"
+PRINCIPAL_MAP_ENV_VAR = "ORDER_PRINCIPAL_MAP"
+
+logger = logging.getLogger(__name__)
 
 
 def _demo_mode() -> bool:
@@ -217,16 +221,45 @@ def _demo_mode() -> bool:
     }
 
 
-def resolve_caller(caller_id: object) -> str | None:
-    """调用方身份 → 客户号；无法确定时返回 None（调用方必须失败关闭）。
+def _principal_map() -> dict[str, str]:
+    """principal → 客户号 的显式映射（JSON 对象，来自环境变量）。
 
-    注意这里**不**对 caller_id 做哈希之类的"派生"：caller_id 是客户端可控的
-    （session id 由请求方给出），用可控输入派生客户号等于让调用方自选客户，
-    那是安全剧场，不是隔离。
+    提供这个入口是为了让"上线前关掉演示模式"真的可走，而不是只能改代码：
+        ORDER_DEMO_SINGLE_TENANT=0
+        ORDER_PRINCIPAL_MAP={"u_abc123":"C2"}
     """
-    key = str(caller_id or "").strip()
-    if key in _CUSTOMER_PHONES:
-        return key
+    raw = (os.getenv(PRINCIPAL_MAP_ENV_VAR) or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("%s 解析失败，按空映射处理: %s", PRINCIPAL_MAP_ENV_VAR, e)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("%s 不是 JSON 对象，按空映射处理", PRINCIPAL_MAP_ENV_VAR)
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def resolve_principal(principal_id: object) -> str | None:
+    """principal（账号/会话标识）→ 客户号；无法确定时返回 None（调用方失败关闭）。
+
+    ⚠️ 这里**刻意不做**"如果这个值本身长得像客户号，就直接采信"的推断。
+
+    为什么必须这样：principal 的一端可能是**客户端可控**的值（例如请求里的
+    `session_id`）。只要存在一条把客户端值传进来的路径，"看起来像客户号就采信"
+    就等于让调用方自选客户 —— 上一版正是这样留下了真实越权：
+    `POST /api/chat {"session_id": "C3"}` 就能读到 C3 的订单。
+
+    身份只能来自**服务端**：演示模式、显式映射表，或（接好之后）认证层。
+    """
+    key = str(principal_id or "").strip()
+    if not key:
+        return None
+    mapped = _principal_map().get(key)
+    if mapped in _CUSTOMER_PHONES:
+        return mapped
     if _demo_mode():
         return DEFAULT_CUSTOMER_ID
     return None
@@ -262,20 +295,23 @@ def _find(raw: object) -> tuple[Order | None, str | None]:
 
 
 def _owned(raw: object, customer_id: object) -> tuple[Order | None, str | None]:
-    """取订单并**按调用方身份校验归属**。
+    """取订单并校验归属。
+
+    ⚠️ `customer_id` 必须是**服务端已解析好的客户号** —— 解析由 `resolve_principal`
+    在 MCP 服务端完成，数据层这里只做"这个客户号合法吗 + 这单是他的吗"。
+    绝不要把模型或客户端可控的值直接当 customer_id 传进来。
 
     三种情形：
-    - `customer_id is None`：**未绑定身份**。只有单测/演示**直接调用数据层**
-      会走这条路径；服务端（mcp_order_server）永远会传身份，模型碰不到它；
-    - 身份无法确定（演示模式关闭且认不出调用方）：**失败关闭**，不返回任何数据；
-    - 订单不属于该身份：话术与"不存在"完全一致，不泄露存在性。
+    - `customer_id is None`：**未绑定身份**。只有单测/演示**直调数据层**会走这里；
+    - 客户号认不出来：**失败关闭**，不返回任何数据；
+    - 订单不属于该客户：话术与"不存在"完全一致，不泄露存在性。
     """
     order, err = _find(raw)
     if order is None or customer_id is None:
         return order, err
 
-    customer = resolve_caller(customer_id)
-    if customer is None:
+    customer = str(customer_id).strip()
+    if customer not in _CUSTOMER_PHONES:
         return None, UNIDENTIFIED
     if order.phone != _CUSTOMER_PHONES[customer]:
         return None, _not_found(normalize_order_no(raw))
@@ -421,11 +457,11 @@ def describe_recent_orders(
     现在"查谁"只由服务端身份（`customer_id`）决定，模型只能决定"查几笔"。
     """
     if customer_id is None:
-        # 未绑定身份：仅单测/演示**直调数据层**走这条路径（服务端永远会传身份）
+        # 未绑定身份：仅单测/演示**直调数据层**走这条路径（服务端永远会传已解析的客户号）
         pool = list(_ORDERS.values())
     else:
-        customer = resolve_caller(customer_id)
-        if customer is None:
+        customer = str(customer_id).strip()
+        if customer not in _CUSTOMER_PHONES:
             return UNIDENTIFIED
         phone = _CUSTOMER_PHONES[customer]
         pool = [o for o in _ORDERS.values() if o.phone == phone]

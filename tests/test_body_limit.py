@@ -107,6 +107,73 @@ def test_non_http_scope_passes_through():
 
 
 # ── 4. 上限常量之间的关系 ────────────────────────────────────
+def _client_with_file_route(limit: int):
+    """带 `File(...)` 参数的最小 app —— 复现**真实端点**的请求体解析路径。
+
+    为什么必须带 `File(...)`：FastAPI 只在 `request_body_to_args` 里才有那句
+        except HTTPException: raise
+        except Exception: raise HTTPException(400, "There was an error parsing the body")
+    所以"超限应当返回 413"这件事，只有在**声明了 body 参数**的端点上才验证得动。
+    不带参数的端点会绕过那段代码，从而给出与实际部署不一致的结论。
+    """
+    from fastapi import FastAPI, File, UploadFile
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    @app.post("/upload")
+    async def upload(file: UploadFile = File(...)):  # noqa: ARG001
+        return {"ok": True}
+
+    app.add_middleware(BodyLimitMiddleware, max_body_bytes=limit)
+    return TestClient(app)
+
+
+def test_chunked_body_over_limit_returns_413_not_400():
+    """⚠️ 回归：没有 Content-Length 的超限请求必须返回 **413**，而不是 400。
+
+    上一版把 `RequestBodyTooLarge` 定义成普通 `Exception`，而 FastAPI 解析请求体时会把
+    非 HTTPException 一律改写成 400 —— 真实端点上永远拿不到 413，
+    客户端也就分不清"文件太大"和"请求格式错"。根因见 fastapi/routing.py。
+    """
+    client = _client_with_file_route(limit=1024)
+
+    def _chunks():
+        for _ in range(10):
+            yield b"x" * 512  # 共 5KB，远超 1024
+
+    resp = client.post(
+        "/upload",
+        content=_chunks(),  # 迭代器 → httpx 用 chunked 编码，不带 Content-Length
+        headers={"content-type": "multipart/form-data; boundary=----x"},
+    )
+
+    assert resp.status_code == 413, resp.text
+
+
+def test_content_length_over_limit_returns_413_on_a_real_endpoint():
+    """有 Content-Length 时走中间件自己的响应路径，也必须是 413。"""
+    client = _client_with_file_route(limit=1024)
+    resp = client.post(
+        "/upload",
+        content=b"x" * 4096,
+        headers={"content-type": "multipart/form-data; boundary=----x"},
+    )
+
+    assert resp.status_code == 413, resp.text
+
+
+def test_uppercase_content_length_header_is_still_honoured():
+    """ASGI 规范要求 header name 小写，但真实服务器/替身不保证；
+    写死小写会漏掉预检（虽然 httptools/h11 都是小写，属于纵深防御）。"""
+    import body_limit
+
+    assert body_limit._content_length(
+        {"headers": [(b"Content-Length", b"999999")]}
+    ) == 999999
+
+
+# ── 5. 上限常量之间的关系 ────────────────────────────────────
 def test_body_limit_leaves_room_for_multipart_framing():
     """整个请求体的上限必须**略大于**单文件上限，否则一个刚好 50MB 的文件
     会因为 multipart 帧开销被中间件先拒掉。"""

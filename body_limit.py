@@ -28,25 +28,46 @@ FastAPI 的 `UploadFile = File(...)` 依赖会在**解析 multipart 的时候**�
   仍然由上传接口自己判，好在 multipart 帧开销之外留出余量。
 """
 
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB：与 api/upload_file.py 的对外承诺一致
+from fastapi import HTTPException
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB：与 api/upload_file.py 的对外承诺一致
 # multipart 的 boundary/分片头部会让 body 比文件本身略大；留 1MB 余量，
 # 让"单文件 <= 50MB"这条业务规则继续由上传接口精确判定。
 MAX_BODY_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024
 
 
-class RequestBodyTooLarge(Exception):
-    """请求体超过上限。由 `add_body_limit` 注册的处理器转成 413。"""
+class RequestBodyTooLarge(HTTPException):
+    """请求体超过上限 → **413**。
+
+    ⚠️ 必须继承 `HTTPException`，不能是普通 `Exception`。FastAPI 在解析请求体时是这么写的
+    （`fastapi/routing.py` 的 `request_body_to_args`）：
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, "There was an error parsing the body") from e
+
+    也就是说，一个普通异常会被**改写成 400** —— 客户端就分不清"文件太大"和
+    "请求格式错"了，而且注册的异常处理器永远不会被触发（实测：chunked 超限在
+    真实端点返回的是 400）。继承 HTTPException 之后，413 会原样抛到外层。
+    """
 
     def __init__(self, limit: int) -> None:
-        super().__init__(f"请求体超过上限 {limit} 字节")
+        super().__init__(
+            status_code=413,
+            detail=f"请求体过大（上限 {limit} 字节）",
+        )
         self.limit = limit
 
 
 def _content_length(scope: dict) -> int | None:
-    """从 ASGI scope 里取 Content-Length；取不到或非法都返回 None。"""
+    """从 ASGI scope 里取 Content-Length；取不到或非法都返回 None。
+
+    大小写不敏感：ASGI 规范要求 header name 为小写，但自己构造 scope 的场景
+    （测试替身、非标准服务器）不保证这一点，写死小写会漏掉预检。
+    """
     for key, value in scope.get("headers") or []:
-        if key == b"content-length":
+        if key.lower() == b"content-length":
             try:
                 return int(value)
             except (TypeError, ValueError):
@@ -107,15 +128,9 @@ class BodyLimitMiddleware:
 
 
 def add_body_limit(app) -> None:
-    """给 FastAPI 应用装上请求体上限，并把超限异常映射成 413。"""
-    from fastapi import Request
-    from starlette.responses import JSONResponse
+    """给 FastAPI 应用装上请求体上限。
 
-    async def _handle(request: Request, exc: RequestBodyTooLarge):
-        return JSONResponse(
-            status_code=413,
-            content={"detail": f"请求体过大（上限 {exc.limit} 字节）"},
-        )
-
-    app.add_exception_handler(RequestBodyTooLarge, _handle)
+    不需要注册异常处理器：`RequestBodyTooLarge` 本身就是 `HTTPException`，
+    FastAPI 会原样抛出、由 Starlette 的默认处理器渲染成 413。
+    """
     app.add_middleware(BodyLimitMiddleware, max_body_bytes=MAX_BODY_BYTES)

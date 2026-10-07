@@ -9,4 +9,14 @@ import redis.asyncio as redis
 
 from config import REDIS_URL
 
-redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+# ⚠️ **必须设超时**：redis 客户端默认没有任何 socket 超时。
+# 一次"半开连接"（对端被 kill、网络设备静默丢包）会让
+# `await redis_client.incr(...)`（转人工计数）或会话历史读写**永久挂住** ——
+# 而它们都在请求路径上，挂住就等于这个请求永远不返回。
+# 宁可快速失败并降级（不写计数、历史为空），也不要挂死。
+redis_client = redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+    socket_connect_timeout=2,
+    socket_timeout=2,
+)

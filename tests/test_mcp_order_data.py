@@ -12,18 +12,22 @@
    要在文本里点出来 —— 客服工具的价值就在这里。
 """
 from datetime import date
+import json
 
 import pytest
 
 from mcp_order_data import (
     _MAX_RECENT_LIMIT,
+    DEFAULT_CUSTOMER_ID,
     DEMO_ENV_VAR,
+    PRINCIPAL_MAP_ENV_VAR,
     customer_id_for_phone,
     describe_logistics,
     describe_order,
     describe_recent_orders,
     describe_refund,
     normalize_order_no,
+    resolve_principal,
 )
 
 TODAY = date(2025, 9, 20)
@@ -177,25 +181,32 @@ def test_recent_orders_fails_closed_when_demo_mode_is_off(monkeypatch):
     assert "ORD-" not in out
 
 
-def test_demo_mode_maps_every_caller_to_one_customer(monkeypatch):
-    """没有认证层时，演示模式把所有调用方映射到**同一个**客户。
+def test_demo_mode_maps_every_principal_to_one_customer(monkeypatch):
+    """没有认证层时，演示模式把所有 principal 映射到**同一个**客户。
 
-    这样模型和客户端都选不了"查谁"（选了也是同一个客户），工具链仍然可用；
-    真实部署应当关掉这个开关并接上认证层。
+    关键性质：调用方**不能**通过"把自己取名叫某个客户号"来选中客户 ——
+    映射只认服务端来源（演示模式 / 显式映射表），不接受"看起来像就采信"。
     """
     monkeypatch.delenv(DEMO_ENV_VAR, raising=False)
+    monkeypatch.delenv(PRINCIPAL_MAP_ENV_VAR, raising=False)
 
-    a = describe_recent_orders(customer_id="session-aaa", today=TODAY)
-    b = describe_recent_orders(customer_id="session-bbb", today=TODAY)
+    assert resolve_principal("session-aaa") == DEFAULT_CUSTOMER_ID
+    assert resolve_principal("session-bbb") == DEFAULT_CUSTOMER_ID
+    # ⚠️ 回归点：直接报一个客户号不该被采信（上一版正是这样留下越权的）
+    assert resolve_principal("C3") == DEFAULT_CUSTOMER_ID
 
-    assert a == b, "演示模式下不同会话必须看到同一份数据（无法自选客户）"
-    assert "ORD-" in a
 
-    # 而**已知客户号**仍然走严格归属：换个客户看到的就是另一份
-    other = describe_recent_orders(
-        customer_id=customer_id_for_phone("13900002222"), today=TODAY
-    )
-    assert a != other
+def test_principal_map_maps_only_configured_server_side_principals(monkeypatch):
+    """关掉演示模式后，只有**服务端显式配置过的** principal 才能拿到客户号。"""
+    other = customer_id_for_phone("13900002222")
+    monkeypatch.setenv(DEMO_ENV_VAR, "0")
+    monkeypatch.setenv(PRINCIPAL_MAP_ENV_VAR, json.dumps({"u_real": other}))
+
+    assert resolve_principal("u_real") == other
+    assert resolve_principal("u_unknown") is None, "没配置的 principal 必须失败关闭"
+    assert resolve_principal(other) is None, "配置表里没写的客户号同样不采信"
+    assert resolve_principal(None) is None
+    assert resolve_principal("") is None
 
 
 def test_orders_fail_closed_when_demo_mode_is_off(monkeypatch):

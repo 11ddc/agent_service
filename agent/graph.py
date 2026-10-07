@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 # `TOOL_MAX` 限的是"工具轮次"，这里限的是"整图步数"，两者互为兜底。
 GRAPH_RECURSION_LIMIT = int(os.getenv("GRAPH_RECURSION_LIMIT", "25"))
 
+# 兜底 Agent（LangChain `create_agent`）自己的步数上限。
+# 不显式传的话用的是它自己的默认值（langchain 内部是 9999）—— 与工具循环同理，
+# 一个想反复调工具的模型能跑上千步。实测：编译图**自己的** config 会生效，
+# 所以这里必须传，不能指望上层 invoke 的 recursion_limit 兜住。
+AGENT_RECURSION_LIMIT = int(os.getenv("AGENT_RECURSION_LIMIT", "12"))
+
+# 单个请求最多处理几个子问题。子问题数量由 LLM 输出决定，
+# 不设上限 = "一次请求跑 N 遍完整 RAG"，成本与延迟都被模型放大。
+MAX_SUB_QUESTIONS = int(os.getenv("MAX_SUB_QUESTIONS", "5"))
+
 # ── MCP 接入点②（新增）：外部 MCP 工具桥，见 tools_agent/mcp_client.py
 # from tools_agent import mcp_client
 from tools_agent.tool_llm import LOCAL_TOOL_MAP, TOOL_MAX, call_zhipu_chat
@@ -54,6 +64,7 @@ class AgentState(TypedDict):
     answer: str | None  # 响应
     meta: dict | None  # 元数组数据
     tool_rounds: int | None  # 工具循环已进行的轮次（硬上限见 GRAPH_RECURSION_LIMIT）
+    principal_id: str | None  # **已认证的**身份标识（由 API 层注入；绝不来自客户端）
     messages: Annotated[list, add_messages]
 
 
@@ -174,11 +185,11 @@ def tool_call_node(state: AgentState) -> dict:
         # ── MCP 接入点②:外部 MCP 工具(mcp__<server>__<tool>)由 mcp_client 同步执行
         if tool_name.startswith("mcp__"):
             try:
-                # 身份从**会话**注入（走子进程环境变量），不放进工具参数 ——
-                # 见 mcp_client.CALLER_ENV_VAR。MCP 服务据此只返回该调用方
-                # 名下的数据，模型无法通过参数"换个身份"。
+                # 身份用 state 里的 **principal_id**（由 API 层从**已认证的身份**注入），
+                # 绝不用客户端传来的 session_id —— 后者可控，等于让调用方自选客户。
+                # MCP 服务端再把 principal 解析成客户号（见 mcp_order_data.resolve_principal）。
                 result = call_mcp_tool(
-                    tool_name, tool_args, caller_id=state.get("session_id")
+                    tool_name, tool_args, caller_id=state.get("principal_id")
                 )
             except Exception as e:
                 print(f"MCP 工具调用失败: {e}")
@@ -387,11 +398,18 @@ def agent_node(state: AgentState) -> dict:
     try:
         result = agent.invoke(
             {"messages": [{"role": "user", "content": state["question"]}]},
-            config={"configurable": {"thread_id": state["session_id"]}},
+            config={
+                "configurable": {"thread_id": state["session_id"]},
+                # ⚠️ 显式给步数上限：不传就用 langchain 自己的默认（9999）。
+                # 这个兜底 Agent 同样带工具，模型可以反复调用 —— 与工具循环同理，
+                # 必须在这里收紧，不能指望上层的 recursion_limit 兜住。
+                "recursion_limit": AGENT_RECURSION_LIMIT,
+            },
         )
         return {"answer": result["messages"][-1].content}
     except Exception as e:
-        print(f"Agent 回答失败: {e}")
+        # 这是 /chat 两条失败路径的最终兜底，必须留痕（原来只有 print → 线上查不到）
+        logger.warning("Agent 回答失败: %s", e, exc_info=True)
         return {"answer": "抱歉，我暂时无法回答这个问题，请稍后重试。"}
 
 
@@ -416,9 +434,24 @@ def merge_node(state: AgentState) -> dict:
 
 
 def multi_loop_node(state: AgentState) -> dict:
-    """多问题节点（薄图版）：顺序调用单问题子图，每个子问题走完整流程，最后合并。"""
+    """多问题节点（薄图版）：顺序调用单问题子图，每个子问题走完整流程，最后合并。
+
+    子问题数量**必须设上限**：数量来自 LLM 输出，不设限就是"一次请求跑 N 遍完整
+    RAG"，成本与延迟都被模型放大。超出的部分明确告知用户，而不是假装全答了。
+    """
+    all_questions = list(state.get("sub_questions") or [])
+    questions = all_questions[:MAX_SUB_QUESTIONS]
+    dropped = len(all_questions) - len(questions)
+    if dropped > 0:
+        logger.warning(
+            "子问题过多：收到 %d 个，只处理前 %d 个，丢弃 %d 个",
+            len(all_questions),
+            MAX_SUB_QUESTIONS,
+            dropped,
+        )
+
     parts, last_meta = [], None
-    for i, q in enumerate(state["sub_questions"]):
+    for i, q in enumerate(questions):
         print("多问题循环：", q)
         if i:
             # 必须与下面 "\n".join(parts) 的分隔保持一致，否则流式正文会缺
@@ -428,12 +461,24 @@ def multi_loop_node(state: AgentState) -> dict:
         # 能直接读到本线程的 emitter，不需要额外透传参数。
         # config 也带上传：每次 invoke 是一份**独立**的步数预算，不带就退回 10007。
         r = question_graph.invoke(
-            {"question": q, "session_id": state["session_id"]},
+            {
+                "question": q,
+                "session_id": state["session_id"],
+                # 身份必须透传：否则子图里的工具调用拿不到 principal（会失败关闭）
+                "principal_id": state.get("principal_id"),
+            },
             config={"recursion_limit": GRAPH_RECURSION_LIMIT},
         )
         parts.append(r.get("answer") or "")
         last_meta = r.get("meta") or last_meta
-    return {"answer": "\n".join(parts) or None, "meta": last_meta or {}}
+
+    answer = "\n".join(parts) or None
+    if answer and dropped:
+        answer = (
+            f"{answer}\n\n（本次问题较多，我只处理了前 {len(questions)} 个，"
+            f"其余 {dropped} 个请分次提问。）"
+        )
+    return {"answer": answer, "meta": last_meta or {}}
 
 
 # tool_agent子图

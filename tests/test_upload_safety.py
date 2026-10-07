@@ -131,6 +131,12 @@ def test_safe_filename_accepts_only_bare_names():
         "CON.pdf",  # Windows 保留设备名
         "aux.md",
         "a.pdf.",  # 结尾的点会被静默去掉
+        'a"b.pdf',  # Windows 非法字符：open() 会抛 OSError → 500
+        "a<b>.pdf",
+        "a|b.pdf",
+        "a\x00b.pdf",  # 裸 NUL：以前会让 Path.resolve() 抛 ValueError → 500
+        "a\x1fb.pdf",  # 控制字符
+        "x" * 300 + ".pdf",  # 超过文件名长度上限
         "",
         "..",
         None,
@@ -138,6 +144,18 @@ def test_safe_filename_accepts_only_bare_names():
         with pytest.raises(HTTPException) as exc:
             uf._safe_filename(bad)
         assert exc.value.status_code == 400
+
+
+def test_illegal_characters_are_rejected_with_400_not_500():
+    """非法字符要得到 400（"文件名不合法"），而不是 500（"服务器挂了"）。
+
+    上一版实测：`a"b.pdf`、`a|b.pdf`、300 字符长名会让 `open()` 抛 OSError，
+    裸 NUL 会让 `Path.resolve()` 抛 ValueError —— 全都是未捕获的 500。
+    """
+    for bad in ('a"b.pdf', "a|b.pdf", "a<b>.pdf", "a\x00b.pdf", "x" * 300 + ".pdf"):
+        with pytest.raises(HTTPException) as exc:
+            uf._safe_filename(bad)
+        assert exc.value.status_code == 400, f"{bad!r} 应当是 400"
 
 
 def test_safe_filename_keeps_names_that_merely_contain_reserved_words():

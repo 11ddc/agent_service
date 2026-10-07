@@ -38,6 +38,13 @@ _RESERVED_STEMS = frozenset(
     | {f"LPT{i}" for i in range(1, 10)}
 )
 
+# Windows 文件名里的非法字符。这些不会造成越界，但会让 open() 抛 OSError → 接口 500，
+# 而正确语义是 400（"你的文件名不合法"）。
+_ILLEGAL_NAME_CHARS = frozenset('<>"|?*')
+
+# 文件名长度上限（字节）。ext4/NTFS 单个组件上限 255 字节；超了就是 OSError。
+MAX_FILENAME_BYTES = 255
+
 
 def _is_reserved_device_name(name: str) -> bool:
     """按 Windows 的规则判断：取第一个点之前的词干，去掉尾部空格后比大小写不敏感。"""
@@ -64,6 +71,12 @@ def _safe_filename(raw: str | None) -> str:
     即只接受不含任何目录成分的名字。反斜杠必须显式换掉：在 POSIX 上
     `\\` 不是分隔符，`"..\\..\\x.pdf"` 会被当成一个普通文件名漏过去。
     另外**冒号一律拒绝**：它同时是盘符分隔符和 NTFS 交换数据流（ADS）的分隔符。
+
+    最后一层是"能落盘"的约束 —— 名字合法不代表能写成文件：
+      - 控制字符（尤其裸 NUL）会让 `Path.resolve()` 抛 ValueError → 接口 500；
+      - `< > " | ? *` 在 Windows 上是非法字符 → open() 抛 OSError → 500；
+      - 超过文件名长度上限 → OSError → 500。
+    这类请求应当得到 400（"你的文件名不合法"），而不是 500（"服务器挂了"）。
     """
     name = (raw or "").strip()
     leaf = name.replace("\\", "/").rsplit("/", 1)[-1]
@@ -77,6 +90,15 @@ def _safe_filename(raw: str | None) -> str:
         raise HTTPException(status_code=400, detail=f"非法文件名: {raw!r}")
     if _is_reserved_device_name(leaf):
         raise HTTPException(status_code=400, detail=f"非法文件名: {raw!r}")
+    if any(ch in leaf for ch in _ILLEGAL_NAME_CHARS) or any(
+        ord(ch) < 32 or ord(ch) == 127 for ch in leaf
+    ):
+        raise HTTPException(status_code=400, detail=f"非法文件名: {raw!r}")
+    if len(leaf.encode("utf-8")) > MAX_FILENAME_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件名过长（上限 {MAX_FILENAME_BYTES} 字节）: {leaf[:40]!r}…",
+        )
     return leaf
 
 
@@ -112,7 +134,17 @@ async def upload_file(file: UploadFile = File(...)):
     # 这一条防的不是上面那次校验，而是"将来有人放宽 _safe_filename"的回归 ——
     # 校验可以演化，但这个不变量不能破。resolve() 会把盘符相对路径
     # （"C:evil.pdf"）按那块盘的当前目录展开，从而在这里被挡住。
-    if file_path.resolve().parent != save_dir.resolve():
+    #
+    # ⚠️ resolve() 本身也可能抛：名字里含裸 NUL 时抛 ValueError（实测会变成 500）。
+    #    那属于"文件名不合法"，应当 400。
+    try:
+        resolved_parent = file_path.resolve().parent
+        expected_parent = save_dir.resolve()
+    except (OSError, ValueError) as e:
+        raise HTTPException(
+            status_code=400, detail=f"非法文件名: {file.filename!r}（{type(e).__name__}）"
+        ) from e
+    if resolved_parent != expected_parent:
         raise HTTPException(status_code=400, detail=f"非法文件名: {file.filename!r}")
 
     # 3. 分块落盘到临时文件，最后原子改名：

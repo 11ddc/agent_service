@@ -7,6 +7,7 @@
 或者客户端的命名空间对不上导致工具能列出却调不动 —— 两者都不报错。
 """
 import asyncio
+import json
 import re
 
 import pytest
@@ -22,15 +23,12 @@ def _tools() -> list:
 
 @pytest.fixture(autouse=True)
 def _default_caller(monkeypatch):
-    """默认注入一个**已知客户**身份（示例订单 ORD-20250820-001 的持有人）。
+    """默认注入一个 principal（演示模式下会映射到演示客户）。
 
-    服务端现在要求身份：拿不到就失败关闭（这是刻意的）。大多数用例关心的是
-    "接线"，所以统一给一个合法身份；个别用例再覆盖或删除它。
+    服务端要求身份：解析不出来就失败关闭（这是刻意的）。大多数用例关心的是
+    "接线"，所以统一给一个合法 principal；个别用例再覆盖或删除它。
     """
-    monkeypatch.setenv(
-        mcp_order_data.CALLER_ENV_VAR,
-        mcp_order_data.customer_id_for_phone("13800001111"),
-    )
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "u_test_principal")
 
 
 def test_server_name_matches_the_namespace_used_by_the_client():
@@ -126,16 +124,21 @@ def test_demo_mode_keeps_the_tool_chain_usable(monkeypatch):
 
 
 def test_tools_only_return_the_callers_own_orders(monkeypatch):
-    """身份来自子进程环境变量，不是工具参数 —— 换成别人只能拿到"查不到"。"""
+    """两个 principal 分别绑到两个客户：越权只能拿到"查不到"。"""
     mine = mcp_order_data.customer_id_for_phone("13800001111")
-    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, mine)
+    other = mcp_order_data.customer_id_for_phone("13900002222")
+    monkeypatch.setenv(mcp_order_data.DEMO_ENV_VAR, "0")
+    monkeypatch.setenv(
+        mcp_order_data.PRINCIPAL_MAP_ENV_VAR,
+        json.dumps({"u_mine": mine, "u_other": other}),
+    )
 
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "u_mine")
     assert "ORD-20250820-001" in mcp_order_server.query_order("ORD-20250820-001")
 
-    # 换一个客户身份去查同一张单：必须拿不到任何字段，
+    # 换一个 principal 去查同一张单：必须拿不到任何字段，
     # 且话术与"订单根本不存在"完全同形（否则就成了存在性探测接口）
-    other = mcp_order_data.customer_id_for_phone("13900002222")
-    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, other)
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "u_other")
     stolen = mcp_order_server.query_order("ORD-20250820-001")
     missing = mcp_order_server.query_order("ORD-19990101-999")
 
@@ -144,6 +147,38 @@ def test_tools_only_return_the_callers_own_orders(monkeypatch):
     assert stolen.replace("ORD-20250820-001", "X") == missing.replace(
         "ORD-19990101-999", "X"
     )
+
+
+def test_caller_named_like_a_customer_id_cannot_select_that_customer(monkeypatch):
+    """⚠️ 安全回归：把调用方**取名叫客户号**，不能因此读到那个客户的订单。
+
+    这正是上一版留下的真实越权：身份映射里有"如果这个值看起来像客户号，就直接
+    采信"的推断，而 caller_id 的一端是**客户端可控**的 session_id，于是
+    `POST /api/chat {"session_id": "C3"}` 就能读到 C3 的订单。
+
+    现在映射只认服务端来源：演示模式、显式映射表（或认证层）。
+    """
+    monkeypatch.setenv(mcp_order_data.DEMO_ENV_VAR, "0")
+    monkeypatch.delenv(mcp_order_data.PRINCIPAL_MAP_ENV_VAR, raising=False)
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "C3")  # 直接报一个客户号
+
+    out = mcp_order_server.query_order("ORD-20250820-001")
+
+    assert "身份" in out or "转人工" in out
+    assert "已签收" not in out, "取名叫客户号不该拿到该客户的数据"
+
+
+def test_demo_mode_still_serves_the_demo_customer(monkeypatch):
+    """演示模式（默认）下工具链可用，但所有 principal 看到的是**同一个**客户。"""
+    monkeypatch.delenv(mcp_order_data.DEMO_ENV_VAR, raising=False)
+
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "u_any")
+    first = mcp_order_server.query_recent_orders()
+    monkeypatch.setenv(mcp_order_data.CALLER_ENV_VAR, "u_somebody_else")
+    second = mcp_order_server.query_recent_orders()
+
+    assert first == second, "演示模式下换个 principal 不该看到不同的数据"
+    assert "ORD-" in first
 
 
 def test_recent_orders_cannot_be_redirected_by_a_positional_argument(monkeypatch):

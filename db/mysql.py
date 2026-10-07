@@ -20,6 +20,13 @@ from dotenv import load_dotenv
 # 连接超时（秒）：MySQL 不可用时快速失败，避免拖住检索请求
 CONNECT_TIMEOUT = 5
 
+# ⚠️ 只设连接超时是不够的：pymysql 的 `read_timeout` 默认是 None（永不超时）。
+# 服务端半开（连接还在、对端不响应）时，一次 SELECT 就能让工作线程**永久挂住** ——
+# 而这里的查询都在请求路径上（取父块、写文档元数据）。
+# 取值比最长查询宽裕得多：本项目都是按主键/小范围 IN 的查询，正常在毫秒级。
+READ_TIMEOUT = int(os.getenv("MYSQL_READ_TIMEOUT", "10"))
+WRITE_TIMEOUT = int(os.getenv("MYSQL_WRITE_TIMEOUT", "10"))
+
 # 默认字符集：必须 utf8mb4（4 字节），"utf8" 是 3 字节别名，存不下生僻字
 DEFAULT_CHARSET = "utf8mb4"
 
@@ -64,6 +71,8 @@ def _connect_kwargs(url: str) -> dict:
         "database": (parsed.path or "").lstrip("/") or None,
         "charset": charset or DEFAULT_CHARSET,
         "connect_timeout": CONNECT_TIMEOUT,
+        "read_timeout": READ_TIMEOUT,
+        "write_timeout": WRITE_TIMEOUT,
         "autocommit": False,
     }
 

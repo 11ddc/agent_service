@@ -55,6 +55,20 @@ CALLER_ENV_VAR = "MCP_CALLER_ID"
 # 几十个卡死的调用足以让整个 API 停止响应。
 MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "30"))
 
+# ⚠️ 必须**显式转发**给 MCP 子进程的业务侧配置。
+#
+# 为什么：SDK 只让子进程继承一份**白名单**环境变量
+# （PATH / SystemRoot / TEMP / USERPROFILE …，见 mcp/client/stdio.py 的
+# `get_default_environment()`），业务配置**不在其中**。不转发的话，服务端会拿它
+# 自己的默认值继续跑 —— 典型表现就是"你把 ORDER_DEMO_SINGLE_TENANT 设成 0，
+# 服务端却仍然认为自己在演示模式"，而且**完全不报错**。
+# 实测确认过：这正是"配置没生效但看起来一切正常"的静默故障，
+# 会让"上线前关掉演示模式"这一步形同虚设。
+_FORWARDED_ENV = (
+    "ORDER_DEMO_SINGLE_TENANT",  # 订单服务的单租户演示开关
+    "ORDER_PRINCIPAL_MAP",  # principal → 客户号 的服务端映射
+)
+
 
 @dataclass(frozen=True)
 class ServerSpec:
@@ -144,19 +158,24 @@ def _server_params(
 ) -> StdioServerParameters:
     """描述如何启动服务端子进程。
 
-    `caller_id` 通过**子进程环境变量**注入（见 CALLER_ENV_VAR）—— 这是本桥
-    唯一被信任的身份来源；工具参数里任何"我是谁"都不作数。
+    传 `env` 有**两个**作用：
+    1. 注入调用方身份（见 CALLER_ENV_VAR）—— 这是本桥唯一被信任的身份来源；
+       工具参数里任何"我是谁"都不作数。
+    2. 转发业务侧配置（见 `_FORWARDED_ENV`）—— SDK 的环境白名单不含业务配置，
+       不显式转发的话子进程会用自己的默认值，**且不报错**。
 
-    注意 SDK 的 env 是**合并**到一份白名单之上的
+    注意 SDK 的 env 是**合并**到白名单之上的
     （`mcp/client/stdio.py`: `get_default_environment() | (server.env or {})`），
-    所以这里只多传一个身份变量：既不会把 .env 里的密钥带进子进程，
-    也不会丢掉 PATH / SystemRoot 这些子进程启动必需项。
+    所以这里只多传几个变量：既不会把 .env 里的密钥带进子进程，
+    也不会丢掉 PATH / SystemRoot 这些启动必需项。
     """
-    env = {CALLER_ENV_VAR: caller_id} if caller_id else None
+    env: dict[str, str] = {name: os.environ[name] for name in _FORWARDED_ENV if name in os.environ}
+    if caller_id:
+        env[CALLER_ENV_VAR] = caller_id
     return StdioServerParameters(
         command=spec.command,
         args=list(spec.args),
-        env=env,
+        env=env or None,
     )
 
 

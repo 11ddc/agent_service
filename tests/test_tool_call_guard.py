@@ -18,9 +18,12 @@ from langchain_core.messages import AIMessage, ToolMessage
 import agent.graph as g
 
 
-def _state(tool_name: str, session_id: str = "s1") -> dict:
+def _state(tool_name: str, session_id: str = "s1", principal_id: str = "u_abc") -> dict:
     return {
+        # session_id 是**客户端可控**的；principal_id 必须由服务端从已认证身份注入。
+        # 两个都给上，是为了让下面的用例能证明"节点用的是后者，不是前者"。
         "session_id": session_id,
+        "principal_id": principal_id,
         "messages": [
             AIMessage(
                 content="",
@@ -109,9 +112,9 @@ def test_mcp_tool_still_executes(monkeypatch):
     monkeypatch.setattr(g, "call_mcp_tool", _fake_call)
 
     assert _only_message(_state("mcp__weather__get")).content == "外部工具结果"
-    # 身份必须由节点从**会话**注入（第三个参数），而不是混进工具参数 ——
-    # 否则模型就能自己声明"我是谁"（IDOR）。
-    assert calls == [("mcp__weather__get", {"query": "x"}, "s1")]
+    # 身份用 **principal_id**（服务端从已认证身份注入），且**不能**是 session_id ——
+    # session_id 由客户端提供，用它当身份就等于让调用方自选"查谁"（真实越权）。
+    assert calls == [("mcp__weather__get", {"query": "x"}, "u_abc")]
 
 
 def test_mcp_tool_failure_degrades_to_message(monkeypatch):

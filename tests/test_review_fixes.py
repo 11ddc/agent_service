@@ -304,3 +304,168 @@ def test_outbound_network_guard_allows_loopback():
         socket.create_connection(("127.0.0.1", 1), timeout=0.5)
 
     assert "禁止真实出网" not in str(exc.value)
+
+
+# ══════════════════════════════════════════════════════════════
+# 6. 对抗性复核（第二轮）发现的问题
+# ══════════════════════════════════════════════════════════════
+def test_agent_node_passes_its_own_recursion_limit(monkeypatch):
+    """兜底 Agent 必须**自己**带步数上限。
+
+    不传的话用它自己的默认值（langchain 内部是 9999），而这个 Agent 同样带工具、
+    模型可以反复调用。实测：编译图**自己的** config 会生效，所以不能指望上层的
+    `recursion_limit` 兜住它。
+    """
+    seen = {}
+
+    class _FakeAgent:
+        def invoke(self, payload, config=None):
+            seen["config"] = config
+            return {"messages": [SimpleNamespace(content="兜底答案")]}
+
+    monkeypatch.setattr(g, "agent", _FakeAgent())
+
+    out = g.agent_node({"question": "q", "session_id": "s1"})
+
+    assert out["answer"] == "兜底答案"
+    assert seen["config"]["recursion_limit"] == g.AGENT_RECURSION_LIMIT
+    assert seen["config"]["configurable"]["thread_id"] == "s1"
+
+
+def test_multi_loop_caps_the_number_of_sub_questions(monkeypatch):
+    """子问题数量来自 LLM 输出，必须设上限，否则一次请求跑 N 遍完整 RAG。"""
+    monkeypatch.setattr(g, "MAX_SUB_QUESTIONS", 2)
+    asked = []
+
+    class _FakeQuestionGraph:
+        def invoke(self, payload, config=None):
+            asked.append(payload["question"])
+            return {"answer": f"A:{payload['question']}", "meta": {}}
+
+    monkeypatch.setattr(g, "question_graph", _FakeQuestionGraph())
+
+    out = g.multi_loop_node(
+        {
+            "sub_questions": ["q1", "q2", "q3", "q4"],
+            "session_id": "s",
+            "principal_id": "u1",
+        }
+    )
+
+    assert asked == ["q1", "q2"], "只该处理前 MAX_SUB_QUESTIONS 个"
+    assert "只处理了前 2 个" in out["answer"], "必须诚实告知还有没处理的"
+    assert "q3" not in out["answer"]
+
+
+def test_multi_loop_forwards_the_principal_to_the_subgraph(monkeypatch):
+    """身份必须透传，否则子图里的工具调用拿不到 principal（会失败关闭）。"""
+    seen = {}
+
+    class _FakeQuestionGraph:
+        def invoke(self, payload, config=None):
+            seen.update(payload)
+            return {"answer": "A", "meta": {}}
+
+    monkeypatch.setattr(g, "question_graph", _FakeQuestionGraph())
+
+    g.multi_loop_node(
+        {"sub_questions": ["q1"], "session_id": "s", "principal_id": "u42"}
+    )
+
+    assert seen["principal_id"] == "u42"
+    assert seen["session_id"] == "s"
+
+
+def test_redis_client_has_socket_timeouts():
+    """Redis 默认没有 socket 超时 —— 半开连接会让请求路径永久挂住。"""
+    import redis_client
+
+    kwargs = redis_client.redis_client.connection_pool.connection_kwargs
+
+    assert kwargs.get("socket_timeout"), "缺少 socket_timeout"
+    assert kwargs.get("socket_connect_timeout"), "缺少 socket_connect_timeout"
+
+
+def test_mysql_connection_has_read_and_write_timeouts():
+    """pymysql 的 read_timeout 默认是 None（永不超时）。"""
+    from db.mysql import _connect_kwargs
+
+    kwargs = _connect_kwargs("mysql+pymysql://u:p@127.0.0.1:3306/rag?charset=utf8mb4")
+
+    assert kwargs["connect_timeout"] > 0
+    assert kwargs["read_timeout"] > 0
+    assert kwargs["write_timeout"] > 0
+    assert kwargs["charset"] == "utf8mb4"
+
+
+def test_cp936_cannot_encode_the_symbols_our_business_data_uses():
+    """先证明这个坑是真的，再验证兜底写法有效。
+
+    实测：`¥`（U+00A5，订单金额用的就是它）与 `⚠`（U+26A0，运输超期提示用的）
+    **都编不进 cp936**（注意 U+FFE5 `￥` 可以，两者不是同一个字符）。
+    stdout 被重定向时编码就是 cp936，所以一行 print 业务数据就能把请求打成 500。
+    """
+    import io
+
+    strict = io.TextIOWrapper(io.BytesIO(), encoding="cp936", errors="strict")
+    with pytest.raises(UnicodeEncodeError):
+        strict.write("订单金额 ¥2699.00")
+    with pytest.raises(UnicodeEncodeError):
+        strict.write("在途已超过 5 天 ⚠")
+
+    # main.py 的兜底写法：UTF-8 + replace → 最坏是日志里一个替代字符，而不是请求失败
+    tolerant = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="replace")
+    tolerant.write("订单金额 ¥2699.00 ⚠")
+    tolerant.flush()
+
+
+def test_main_installs_the_stdout_encoding_guard():
+    """兜底必须真的挂在入口上，而不是只写在注释里。"""
+    src = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert 'reconfigure(encoding="utf-8", errors="replace")' in src
+
+
+# ══════════════════════════════════════════════════════════════
+# 7. MCP 子进程的**配置转发**（静默故障回归）
+# ══════════════════════════════════════════════════════════════
+def test_server_params_forward_business_config_to_the_child(monkeypatch):
+    """业务侧配置必须**显式转发**给 MCP 子进程。
+
+    SDK 只让子进程继承一份白名单环境变量（PATH / SystemRoot / …），业务配置不在其中。
+    不转发的话服务端会用自己的默认值继续跑 —— 例如"把 `ORDER_DEMO_SINGLE_TENANT`
+    设成 0，服务端却仍然认为在演示模式"，**而且不报错**。
+
+    这不是假想：实测就是这样，端到端跑一次才发现"关掉演示模式"完全没生效。
+    """
+    monkeypatch.setenv("ORDER_DEMO_SINGLE_TENANT", "0")
+    monkeypatch.setenv("ORDER_PRINCIPAL_MAP", '{"u1": "C2"}')
+    spec = mcp_client.ServerSpec("order", "python", ("/tmp/mcp_order_server.py",))
+
+    params = mcp_client._server_params(spec, caller_id="u1")
+
+    assert params.env["ORDER_DEMO_SINGLE_TENANT"] == "0"
+    assert params.env["ORDER_PRINCIPAL_MAP"] == '{"u1": "C2"}'
+    assert params.env[mcp_client.CALLER_ENV_VAR] == "u1"
+
+
+def test_server_params_forward_a_whitelist_not_the_whole_environment(monkeypatch):
+    """转发必须走**白名单**：密钥之类的绝不能进子进程。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-should-not-be-forwarded")
+    monkeypatch.setenv("GENERATE_API_KEY", "sk-also-not")
+    spec = mcp_client.ServerSpec("order", "python", ("/tmp/mcp_order_server.py",))
+
+    env = mcp_client._server_params(spec, caller_id="u1").env or {}
+
+    assert "DEEPSEEK_API_KEY" not in env
+    assert "GENERATE_API_KEY" not in env
+    assert set(env) <= set(mcp_client._FORWARDED_ENV) | {mcp_client.CALLER_ENV_VAR}
+
+
+def test_server_params_leave_env_untouched_when_nothing_to_pass(monkeypatch):
+    """没有任何要传的东西时不要凭空造一个 env（保持"不改动子进程环境"的语义）。"""
+    for name in mcp_client._FORWARDED_ENV:
+        monkeypatch.delenv(name, raising=False)
+    spec = mcp_client.ServerSpec("order", "python", ("/tmp/mcp_order_server.py",))
+
+    assert mcp_client._server_params(spec).env is None
