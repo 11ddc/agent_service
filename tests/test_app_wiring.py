@@ -76,7 +76,12 @@ def test_oversized_body_is_rejected_and_keeps_cors_headers(client):
 
 
 def test_normal_json_body_is_not_affected_by_the_limit(client):
-    """上限不能误伤正常请求：缺字段的空请求应当正常进入参数校验（422）。"""
+    """上限不能误伤正常请求。
+
+    空 JSON 会在**参数校验**阶段被拒（422）；如果鉴权先跑则会得到 401。
+    两者都说明"请求进到了业务链路"，关键是不能是 413。
+    """
     resp = client.post("/api/chat", json={})
 
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code in (401, 422), resp.text
+    assert resp.status_code != 413

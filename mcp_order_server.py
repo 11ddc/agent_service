@@ -22,6 +22,7 @@ from mcp.server import MCPServer
 
 from mcp_order_data import (
     CALLER_ENV_VAR,
+    RESOLVED_CUSTOMER_ENV,
     UNIDENTIFIED,
     describe_logistics,
     describe_order,
@@ -47,12 +48,18 @@ def _caller() -> str | None:
 
 
 def _customer() -> str | None:
-    """把 principal 解析成**客户号**；解析不出来就失败关闭。
+    """客户号：优先用后端注入的**已解析值**，其次走服务端映射，最后失败关闭。
 
-    解析只认服务端来源（演示模式 / ORDER_PRINCIPAL_MAP / 将来的认证层）。
-    这里刻意不接受"principal 本身长得像客户号"这种推断 —— 因为 principal
-    的一端可能是客户端可控的 session_id，采信它等于让调用方自选客户。
+    三种来源的优先级是有讲究的：
+    1. `MCP_RESOLVED_CUSTOMER` —— 后端已根据认证身份算好（最可信，生产走这条）；
+    2. `ORDER_PRINCIPAL_MAP` / 演示模式 —— 服务端自己的映射（没有账号体系时的占位）；
+    3. 都拿不到 → None → 工具返回"无法确认身份"。
+
+    ⚠️ 任何情况下都**不接受**"principal 本身长得像客户号就采信"这种推断。
     """
+    resolved = (os.getenv(RESOLVED_CUSTOMER_ENV) or "").strip()
+    if resolved:
+        return resolved
     return resolve_principal(_caller())
 
 

@@ -45,24 +45,57 @@ REQUIRED_KEYS = {
     "ZHI_PU_API_KEY": "工具调用模型（智谱 glm-4.5-air）",
 }
 
+# 认证相关的必需项。只在开启认证时才要求 —— 但**默认就是开启的**。
+#
+# 为什么必须启动即失败：JWT 密钥是"谁能签发令牌"的唯一凭据。
+# 若允许缺省，代码里就得有个内置默认密钥，那等于**任何人都能伪造任意身份的令牌**，
+# 而服务看起来一切正常 —— 这是最危险的一类配置。
+AUTH_REQUIRED_KEYS = {
+    "AUTH_JWT_SECRET": (
+        "认证：JWT 签名密钥（生成："
+        'python -c "import secrets;print(secrets.token_urlsafe(48))"）'
+    ),
+}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    return default if not raw else raw not in {"0", "false", "off", "no"}
+
+
+def _required_keys() -> dict[str, str]:
+    keys = dict(REQUIRED_KEYS)
+    if _env_bool("AUTH_ENABLED", True):
+        keys.update(AUTH_REQUIRED_KEYS)
+    return keys
+
 
 def preflight() -> None:
     """缺 key 就打印一份可照做的清单然后退出，别让用户去啃 OpenAI 的堆栈。"""
-    missing = [k for k in REQUIRED_KEYS if not (os.getenv(k) or "").strip()]
+    required = _required_keys()
+    missing = [k for k in required if not (os.getenv(k) or "").strip()]
     if not missing:
+        if not _env_bool("AUTH_ENABLED", True):
+            # 关掉认证是**显式**的危险动作：必须显眼，别让它悄悄进生产
+            print(
+                "\n[WARNING] AUTH_ENABLED=false：接口**不做任何身份校验**，"
+                "任何能访问端口的人都能问答、上传、读知识库。"
+                "这只应出现在本地演示环境；/health 也会暴露该状态。\n",
+                file=sys.stderr,
+            )
         return
 
     lines = [
         "",
         "=" * 68,
-        "  启动失败：.env 里缺少必需的 API Key（这些 key 在 import 期就会被读取）",
+        "  启动失败：.env 里缺少必需的配置（这些值在 import 期就会被读取）",
         "=" * 68,
         "",
     ]
     # ⚠️ 这里只用 ASCII 符号：Windows 控制台默认 cp936，打不出 ✗ 这类字符
     for key in missing:
         lines.append(f"  [缺失] {key}")
-        lines.append(f"         {REQUIRED_KEYS[key]}")
+        lines.append(f"         {required[key]}")
     lines += [
         "",
         "  怎么修：",

@@ -36,6 +36,10 @@ from datetime import date, timedelta
 # ⚠️ 必须与 mcp_client.CALLER_ENV_VAR 一致（tests 里有断言守着）。
 CALLER_ENV_VAR = "MCP_CALLER_ID"
 
+# 已解析的**业务客户号**（由后端根据认证身份算出后注入）。
+# ⚠️ 必须与 mcp_client.RESOLVED_CUSTOMER_ENV 一致 —— tests 里有断言守着。
+RESOLVED_CUSTOMER_ENV = "MCP_RESOLVED_CUSTOMER"
+
 # 无法确认身份时的统一话术（失败关闭：宁可拒绝查询，也不返回数据）
 UNIDENTIFIED = "无法确认你的身份，暂时不能查询订单。请转人工客服核实后处理。"
 

@@ -50,6 +50,15 @@ ROOT = Path(__file__).resolve().parent
 # ⚠️ 必须与 mcp_order_data.CALLER_ENV_VAR 一致（tests 里有断言守着）。
 CALLER_ENV_VAR = "MCP_CALLER_ID"
 
+# 已解析的**业务客户号**，由后端从"认证身份 → 客户"的绑定里取出后注入。
+#
+# 与 CALLER_ENV_VAR 的区别很重要：
+#   · CALLER_ENV_VAR 是"你是谁"（principal，可能是客户端可控的值）；
+#   · 这个是"你对应哪个客户"，**只能由服务端算出来**。
+# 分开传是为了不让服务端去猜：它拿到已解析的客户号就直接用，
+# 拿不到才回退到 ORDER_PRINCIPAL_MAP / 演示模式，最后失败关闭。
+RESOLVED_CUSTOMER_ENV = "MCP_RESOLVED_CUSTOMER"
+
 # MCP 调用超时（秒）。服务是**子进程**：它挂住（死循环、卡 I/O、等锁）时不会
 # 自己退出，而调用方是同步图节点 —— 没有超时就会永久占住一个工作线程，
 # 几十个卡死的调用足以让整个 API 停止响应。
@@ -154,14 +163,18 @@ def _default_specs() -> list[ServerSpec]:
 
 
 def _server_params(
-    spec: ServerSpec, caller_id: str | None = None
+    spec: ServerSpec,
+    caller_id: str | None = None,
+    resolved_customer: str | None = None,
 ) -> StdioServerParameters:
     """描述如何启动服务端子进程。
 
-    传 `env` 有**两个**作用：
-    1. 注入调用方身份（见 CALLER_ENV_VAR）—— 这是本桥唯一被信任的身份来源；
+    传 `env` 有**三个**作用：
+    1. 注入调用方身份（见 CALLER_ENV_VAR）—— 本桥唯一被信任的 principal 来源；
        工具参数里任何"我是谁"都不作数。
-    2. 转发业务侧配置（见 `_FORWARDED_ENV`）—— SDK 的环境白名单不含业务配置，
+    2. 注入**已解析的客户号**（见 RESOLVED_CUSTOMER_ENV）—— 由后端从认证身份
+       对应的绑定算出，服务端拿到它就不必自己猜。
+    3. 转发业务侧配置（见 `_FORWARDED_ENV`）—— SDK 的环境白名单不含业务配置，
        不显式转发的话子进程会用自己的默认值，**且不报错**。
 
     注意 SDK 的 env 是**合并**到白名单之上的
@@ -169,9 +182,13 @@ def _server_params(
     所以这里只多传几个变量：既不会把 .env 里的密钥带进子进程，
     也不会丢掉 PATH / SystemRoot 这些启动必需项。
     """
-    env: dict[str, str] = {name: os.environ[name] for name in _FORWARDED_ENV if name in os.environ}
+    env: dict[str, str] = {
+        name: os.environ[name] for name in _FORWARDED_ENV if name in os.environ
+    }
     if caller_id:
         env[CALLER_ENV_VAR] = caller_id
+    if resolved_customer:
+        env[RESOLVED_CUSTOMER_ENV] = resolved_customer
     return StdioServerParameters(
         command=spec.command,
         args=list(spec.args),
@@ -231,13 +248,17 @@ async def _call_tool_text(
     raw_name: str,
     arguments: dict,
     caller_id: str | None = None,
+    resolved_customer: str | None = None,
 ) -> str:
     """异步内芯:调用工具,返回文本结果;工具报错(is_error)则抛异常。
 
-    `caller_id` 走**子进程环境变量**而不是工具参数：模型伪造不了它。
+    身份走**子进程环境变量**而不是工具参数：模型伪造不了它。
     """
     async with Client(
-        _server_params(spec, caller_id=caller_id), read_timeout_seconds=MCP_TIMEOUT
+        _server_params(
+            spec, caller_id=caller_id, resolved_customer=resolved_customer
+        ),
+        read_timeout_seconds=MCP_TIMEOUT,
     ) as client:
         result = await client.call_tool(raw_name, arguments=arguments)
         if result.is_error:
@@ -284,16 +305,20 @@ def get_mcp_tools_definition() -> list[dict]:
 
 
 def call_mcp_tool(
-    tool_name: str, arguments: dict, caller_id: str | None = None
+    tool_name: str,
+    arguments: dict,
+    caller_id: str | None = None,
+    resolved_customer: str | None = None,
 ) -> str:
     """同步:让对应的 MCP 服务执行工具。
 
     tool_name 支持带命名空间(mcp__<server>__<tool>)—— 按 server 路由到正确的
     子进程;不带命名空间的裸名则交给第一个服务(兼容改造前的调用方式)。
 
-    `caller_id` 是**调用方身份**,由 graph 节点从会话传入,经子进程环境变量
-    送达服务端(见 CALLER_ENV_VAR)。它绝不放进 `arguments` —— 那里是模型的地盘,
-    一旦混进去,模型就能自己声明"我是谁"。真实部署应替换为认证后的 principal。
+    两个身份参数都经子进程环境变量送达，**绝不放进 `arguments`** —— 那里是模型的
+    地盘，一旦混进去模型就能自己声明"我是谁"：
+      · `caller_id` 是 principal（账号标识）；
+      · `resolved_customer` 是后端**已解析**的业务客户号。
     """
     specs = load_server_specs()
     spec, raw_name = split_namespaced(tool_name, specs)
@@ -308,7 +333,13 @@ def call_mcp_tool(
         spec = specs[0]
 
     return _run_bridge(
-        _call_tool_text(spec, raw_name, arguments or {}, caller_id=caller_id),
+        _call_tool_text(
+            spec,
+            raw_name,
+            arguments or {},
+            caller_id=caller_id,
+            resolved_customer=resolved_customer,
+        ),
         f"工具调用 {raw_name}",
     )
 

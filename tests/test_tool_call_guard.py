@@ -18,12 +18,18 @@ from langchain_core.messages import AIMessage, ToolMessage
 import agent.graph as g
 
 
-def _state(tool_name: str, session_id: str = "s1", principal_id: str = "u_abc") -> dict:
+def _state(
+    tool_name: str,
+    session_id: str = "s1",
+    principal_id: str = "u_abc",
+    customer_id: str = "C2",
+) -> dict:
     return {
-        # session_id 是**客户端可控**的；principal_id 必须由服务端从已认证身份注入。
-        # 两个都给上，是为了让下面的用例能证明"节点用的是后者，不是前者"。
+        # session_id 是**客户端可控**的；principal_id / customer_id 必须由服务端注入。
+        # 都给上，是为了让下面的用例能证明"节点用的是后两者，不是前者"。
         "session_id": session_id,
         "principal_id": principal_id,
+        "customer_id": customer_id,
         "messages": [
             AIMessage(
                 content="",
@@ -105,8 +111,8 @@ def test_unknown_tool_does_not_leave_dangling_tool_calls():
 def test_mcp_tool_still_executes(monkeypatch):
     calls = []
 
-    def _fake_call(name, args, caller_id=None):
-        calls.append((name, args, caller_id))
+    def _fake_call(name, args, caller_id=None, resolved_customer=None):
+        calls.append((name, args, caller_id, resolved_customer))
         return "外部工具结果"
 
     monkeypatch.setattr(g, "call_mcp_tool", _fake_call)
@@ -114,11 +120,12 @@ def test_mcp_tool_still_executes(monkeypatch):
     assert _only_message(_state("mcp__weather__get")).content == "外部工具结果"
     # 身份用 **principal_id**（服务端从已认证身份注入），且**不能**是 session_id ——
     # session_id 由客户端提供，用它当身份就等于让调用方自选"查谁"（真实越权）。
-    assert calls == [("mcp__weather__get", {"query": "x"}, "u_abc")]
+    # 客户号走单独的参数（后端已解析好），同样不是模型能填的。
+    assert calls == [("mcp__weather__get", {"query": "x"}, "u_abc", "C2")]
 
 
 def test_mcp_tool_failure_degrades_to_message(monkeypatch):
-    def _boom(name, args, caller_id=None):
+    def _boom(name, args, caller_id=None, resolved_customer=None):
         raise RuntimeError("外部服务超时")
 
     monkeypatch.setattr(g, "call_mcp_tool", _boom)

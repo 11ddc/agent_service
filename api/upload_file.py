@@ -1,12 +1,17 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from auth import audit
+from auth.deps import Principal, require_roles
 from body_limit import MAX_UPLOAD_BYTES
 from rag.rag import init_rag
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -103,12 +108,20 @@ def _safe_filename(raw: str | None) -> str:
 
 
 @router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    principal: Principal = Depends(require_roles("kb_admin")),
+):
     """
     上传文档到知识库，自动触发 RAG 增量索引。
 
     支持格式：PDF / TXT / Markdown / DOCX / Excel(.xlsx/.xlsm)
+
+    ⚠️ 需要 `kb_admin`（或 admin）角色：这是**写知识库**的接口，
+    而知识库内容会被注入所有用户的提示词 —— 未鉴权的写入口等于让任何人
+    投毒全站答案。以前这个接口是裸的。
     """
+    logger.info("上传请求 user=%s file=%r", principal.user_id, file.filename)
     # 1. 文件名与类型校验（文件名先过：路径穿越要在落盘之前挡住）
     filename = _safe_filename(file.filename)
     suffix = Path(filename).suffix.lower()
@@ -174,6 +187,23 @@ async def upload_file(file: UploadFile = File(...)):
 
     # 4. 索引（解析+embedding+入库是重活，丢线程池，别卡事件循环）
     doc_count = await asyncio.to_thread(init_rag, str(file_path))
+
+    # 5. 审计：谁上传了什么、结果如何。知识库变更属于必须留痕的操作。
+    await audit.record(
+        "kb.upload",
+        "ok",
+        request=None,
+        principal=principal,
+        target=filename,
+        detail=f"bytes={written} chunks={doc_count}",
+    )
+    logger.info(
+        "上传完成 user=%s file=%s bytes=%s chunks=%s",
+        principal.user_id,
+        filename,
+        written,
+        doc_count,
+    )
 
     return {
         "success": True,

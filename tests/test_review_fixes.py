@@ -197,8 +197,9 @@ def test_caller_identity_is_not_part_of_tool_arguments(monkeypatch):
     """桥必须把身份单独传给 `_server_params`，而不是塞进模型可写的 arguments。"""
     captured = {}
 
-    def _fake_params(spec, caller_id=None):
+    def _fake_params(spec, caller_id=None, resolved_customer=None, **kwargs):
         captured["caller_id"] = caller_id
+        captured["resolved_customer"] = resolved_customer
         return mcp_client.StdioServerParameters(command="x", args=[])
 
     class _FakeClient:
@@ -220,14 +221,16 @@ def test_caller_identity_is_not_part_of_tool_arguments(monkeypatch):
     spec = mcp_client.ServerSpec("order", "python", ("/tmp/mcp_order_server.py",))
     out = asyncio.run(
         mcp_client._call_tool_text(
-            spec, "query_order", {"order_no": "X"}, caller_id="C2"
+            spec, "query_order", {"order_no": "X"}, caller_id="C2", resolved_customer="C3"
         )
     )
 
     assert out == "ok"
     assert captured["caller_id"] == "C2"
+    assert captured["resolved_customer"] == "C3"
     assert captured["arguments"] == {"order_no": "X"}
     assert "caller_id" not in captured["arguments"]
+    assert "resolved_customer" not in captured["arguments"]
 
 
 # ══════════════════════════════════════════════════════════════

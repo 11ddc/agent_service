@@ -3,7 +3,7 @@ import json
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -16,6 +16,7 @@ from agent.graph import (  # LangGraph 编排图（拆分→意图→路由→�
     agent_node,
     graph,
 )
+from auth.deps import Principal, require_user
 from intent.examples import HANDOFF_RE
 from query_rewrite import aappend_history
 from redis_client import redis_client
@@ -72,8 +73,20 @@ def _answer_by_agent(question: str, session_id: str) -> str:
     return answer or "抱歉，我暂时无法回答这个问题，请稍后重试。"
 
 
+def _session_key(principal: Principal, client_session_id: str) -> str:
+    """把客户端给的 session_id 收敛成**带身份命名空间**的会话键。
+
+    ⚠️ 为什么必须这么做：`session_id` 由客户端提供，如果直接拿它当 Redis key，
+    猜到/借到别人的 session_id 就能：
+      · 让 rewrite 读到别人的会话历史（借上下文答出别人的事）；
+      · 污染别人的转人工计数窗口。
+    加上身份前缀之后，客户端换 session_id 也只在自己名下换。
+    """
+    return f"{principal.session_scope}:{client_session_id}"
+
+
 @router.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, principal: Principal = Depends(require_user)):
     """同步聊天 — 编排图执行：拆分→意图路由→(短路/RAG/Agent)→汇总
 
     ⚠️ 这里原本是 `print("✅ 请求已进入接口！")`，写在 docstring **之前**：
@@ -82,12 +95,14 @@ async def chat(request: ChatRequest):
     每个请求都会在这一行抛 UnicodeEncodeError。改成 logger 后既没有编码风险，
     又留下了请求维度的痕迹（且不再把用户正文写进 stdout）。
     """
-    logger.info("收到 /chat 请求 session=%s", request.session_id)
+    session_key = _session_key(principal, request.session_id)
+    logger.info("收到 /chat 请求 user=%s session=%s", principal.user_id, session_key)
+
     # 转人工检测：先于一切执行，但只附加提示、不短路主流程；
     # Redis 异常时静默降级，聊天照常（不影响当前聊天接口）
     handoff_msg = None
     try:
-        handoff_msg = await servercustomer(request.question, request.session_id)
+        handoff_msg = await servercustomer(request.question, session_key)
     except Exception as e:
         logger.warning("转人工检测失败，忽略: %s", e)
 
@@ -112,7 +127,15 @@ async def chat(request: ChatRequest):
         # create_task 只能接收协程对象（接收任务会报错，gather是两个都可以）创建task 放入事件循环 等待执行
         result = await asyncio.to_thread(
             graph.invoke,
-            {"question": request.question, "session_id": request.session_id},
+            {
+                "question": request.question,
+                "session_id": session_key,
+                # 身份从**已认证的 principal** 注入：principal_id 用于 MCP 桥的
+                # 身份传递，customer_id 是后端已解析好的业务客户号。
+                # 两者都不是客户端能决定的（session_id 才是客户端给的）。
+                "principal_id": principal.user_id,
+                "customer_id": principal.customer_id,
+            },
             # 整图步数上限：工具循环是个环，不设的话 langgraph 按 10007 走
             {"recursion_limit": GRAPH_RECURSION_LIMIT},
         )
@@ -145,7 +168,7 @@ async def chat(request: ChatRequest):
         answer = f"{answer}\n\n{handoff_msg}" if answer else handoff_msg
     # 异步写入历史会话消息
     # 这里使用的是 主线程的事件循环 即main里面的run
-    await aappend_history(request.session_id, request.question, answer)
+    await aappend_history(session_key, request.question, answer)
 
     resp = {"answer": answer, "session_id": request.session_id, **meta}
     if handoff_msg:
@@ -180,13 +203,16 @@ def _run_graph_with_emitter(emitter, payload: dict):
 
 
 @router.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(
+    request: ChatRequest, principal: Principal = Depends(require_user)
+):
     """流式聊天 — 与 /chat 走**同一条编排图**，RAG 路径真 token 流式。
 
     与 /chat 的两处**有意差异**（为严格隔离，不改动同步链路的任何行为）：
     - 不写 Redis 历史：否则会改变 /chat 下一轮 rewrite_node 读到的历史；
     - 不做转人工计数：否则会共享 user:{session_id}:message_count 这个副作用。
     """
+    session_key = _session_key(principal, request.session_id)
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -210,7 +236,12 @@ async def chat_stream(request: ChatRequest):
             result = await asyncio.to_thread(
                 _run_graph_with_emitter,
                 tracking_emitter,
-                {"question": request.question, "session_id": request.session_id},
+                {
+                    "question": request.question,
+                    "session_id": session_key,
+                    "principal_id": principal.user_id,
+                    "customer_id": principal.customer_id,
+                },
             )
             final_answer = result.get("answer") or ""
 

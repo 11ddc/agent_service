@@ -119,3 +119,59 @@ def embedding_stamp() -> str:
         else "text-embedding-v2"
     )
     return f"{EMBEDDING_PROVIDER}-{name}"
+
+
+# ════════════════════════════════════════════════════════════
+# 认证与授权
+#
+# 企业里"谁在用、他能看什么"是红线，所以这块的姿态是**失败关闭**：
+#   · AUTH_ENABLED 默认开启；缺 AUTH_JWT_SECRET 时 main.py 的启动自检直接拒绝启动
+#     （而不是用一个内置默认密钥悄悄跑起来 —— 那等于谁都能伪造 token）；
+#   · 用户存储（MySQL）不可用时，受保护接口返回 **503**，绝不放行；
+#   · AUTH_ENABLED=false 只给本地演示用，启动时会打 WARNING。
+#
+# ⚠️ 副作用要清楚：开启认证之后 **MySQL 从"建议"变成"必需"** ——
+#    账号体系存在 MySQL 里，没有它就无法登录（这是刻意的失败关闭）。
+# ════════════════════════════════════════════════════════════
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    return default if not raw else raw not in {"0", "false", "off", "no"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+AUTH_ENABLED = _env_bool("AUTH_ENABLED", True)
+AUTH_JWT_SECRET = (os.getenv("AUTH_JWT_SECRET") or "").strip()
+AUTH_ACCESS_TTL = _env_int("AUTH_ACCESS_TTL_SECONDS", 15 * 60)  # 15 分钟
+AUTH_REFRESH_TTL = _env_int("AUTH_REFRESH_TTL_SECONDS", 30 * 24 * 3600)  # 30 天
+AUTH_BCRYPT_ROUNDS = _env_int("AUTH_BCRYPT_ROUNDS", 12)
+AUTH_ALLOW_REGISTRATION = _env_bool("AUTH_ALLOW_REGISTRATION", True)
+AUTH_DEFAULT_ROLE = (os.getenv("AUTH_DEFAULT_ROLE") or "user").strip().lower()
+AUTH_DEFAULT_TENANT = (os.getenv("AUTH_DEFAULT_TENANT") or "default").strip()
+AUTH_MAX_FAILED_LOGINS = _env_int("AUTH_MAX_FAILED_LOGINS", 5)
+AUTH_LOCK_SECONDS = _env_int("AUTH_LOCK_SECONDS", 300)
+AUTH_MIN_PASSWORD_LEN = _env_int("AUTH_MIN_PASSWORD_LEN", 8)
+
+# 只有在**可信反向代理之后**才打开。
+# X-Forwarded-For 是客户端可伪造的：打开它等于让调用方自己决定"被记成哪个 IP"，
+# 而 IP 会进审计日志与风控判断。
+TRUST_PROXY_HEADERS = _env_bool("TRUST_PROXY_HEADERS", False)
+
+# ════════════════════════════════════════════════════════════
+# 请求入口限流
+# 目的不是"防 DDoS"（那该在网关/WAF 做），而是**别让一个客户端把共享的
+# 线程池与模型算力吃光** —— 一次问答是几秒到几十秒的重活。
+# ════════════════════════════════════════════════════════════
+RATE_LIMIT_ENABLED = _env_bool("RATE_LIMIT_ENABLED", True)
+RATE_LIMIT_PER_MINUTE = _env_int("RATE_LIMIT_PER_MINUTE", 30)  # 每用户每分钟
+RATE_LIMIT_BURST = _env_int("RATE_LIMIT_BURST", 10)  # 允许的瞬时突发

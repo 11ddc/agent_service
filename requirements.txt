@@ -50,6 +50,12 @@ PyMySQL>=1.1.0            # MySQL 父块存储
 redis>=5.0                # 会话历史 + 转人工计数窗口（redis_client.py / query_rewrite/history.py）
 httpx>=0.27               # eval/ingest_corpus.py 走真实 HTTP 接口批量入库
 
+# ── 认证与授权 ─────────────────────────────────────────────
+# bcrypt：密码哈希（库里只存哈希，永不存明文；长密码先做 sha256 规避 72 字节截断）
+bcrypt>=4.0
+# PyJWT：访问令牌（HS256）。解码时显式限定算法，防 alg=none 与算法混淆
+PyJWT>=2.8
+
 # ── 配置 / 工具 ────────────────────────────────────────────
 python-dotenv>=1.0
 

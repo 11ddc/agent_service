@@ -22,12 +22,27 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from api import upload_file as uf
+from auth.deps import Principal, Role
 
 
-def _client() -> TestClient:
-    """只挂上传路由的最小 app：不必为了这个测试去 import 整张 LangGraph 图。"""
+def _kb_admin_principal() -> Principal:
+    """直接调用端点函数时使用的身份（绕过 FastAPI 依赖注入）。"""
+    return Principal(
+        user_id="u_test", username="tester", role=Role.KB_ADMIN, tenant_id="default"
+    )
+
+
+def _client(as_role=None) -> TestClient:
+    """只挂上传路由的最小 app：不必为了这个测试去 import 整张 LangGraph 图。
+
+    上传接口现在要求 `kb_admin` 角色（它写的是会被注入所有用户提示词的知识库），
+    所以这里把鉴权依赖覆盖成"已认证的测试身份"：
+    授权本身由 `tests/test_auth.py` 专门验证，这里只关心文件名与体积。
+    """
     app = FastAPI()
     app.include_router(uf.router, prefix="/api")
+    if as_role is not None:
+        as_role(app, role="kb_admin")
     return TestClient(app)
 
 
@@ -39,12 +54,18 @@ def kb_dir(tmp_path, monkeypatch):
     return d
 
 
+@pytest.fixture
+def client(as_role) -> TestClient:
+    """已通过 kb_admin 鉴权的上传客户端。"""
+    return _client(as_role)
+
+
 def _saved_files(kb_dir: Path) -> list[str]:
     return sorted(p.name for p in kb_dir.rglob("*")) if kb_dir.exists() else []
 
 
 # ==================== 正常路径：先证明测试本身没写错 ====================
-def test_valid_upload_saves_file_and_indexes_it(kb_dir, monkeypatch):
+def test_valid_upload_saves_file_and_indexes_it(client, kb_dir, monkeypatch):
     seen = {}
 
     def _fake_init_rag(path):
@@ -53,7 +74,7 @@ def test_valid_upload_saves_file_and_indexes_it(kb_dir, monkeypatch):
 
     monkeypatch.setattr(uf, "init_rag", _fake_init_rag)
 
-    resp = _client().post(
+    resp = client.post(
         "/api/upload",
         files={"file": ("客服手册.pdf", b"%PDF-1.4 fake", "application/pdf")},
     )
@@ -70,11 +91,11 @@ def test_valid_upload_saves_file_and_indexes_it(kb_dir, monkeypatch):
     assert _saved_files(kb_dir) == ["客服手册.pdf"], "不该留下 .part 临时文件"
 
 
-def test_unsupported_suffix_keeps_old_behaviour(kb_dir, monkeypatch):
+def test_unsupported_suffix_keeps_old_behaviour(client, kb_dir, monkeypatch):
     """后缀不支持仍是 200 + success=False（保持原有接口契约，本次不动它）。"""
     monkeypatch.setattr(uf, "init_rag", lambda p: pytest.fail("不该走到索引"))
 
-    resp = _client().post("/api/upload", files={"file": ("x.exe", b"MZ", "application/x-dosexec")})
+    resp = client.post("/api/upload", files={"file": ("x.exe", b"MZ", "application/x-dosexec")})
 
     assert resp.status_code == 200
     assert resp.json()["success"] is False
@@ -103,10 +124,10 @@ def test_unsupported_suffix_keeps_old_behaviour(kb_dir, monkeypatch):
         "  ",
     ],
 )
-def test_path_in_filename_is_rejected(name, kb_dir, tmp_path, monkeypatch):
+def test_path_in_filename_is_rejected(name, client, kb_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(uf, "init_rag", lambda p: pytest.fail("不该走到索引"))
 
-    resp = _client().post(
+    resp = client.post(
         "/api/upload", files={"file": (name, b"payload", "application/pdf")}
     )
 
@@ -164,7 +185,7 @@ def test_safe_filename_keeps_names_that_merely_contain_reserved_words():
         assert uf._safe_filename(ok) == ok
 
 
-def test_landing_path_must_stay_inside_the_knowledge_base(kb_dir, monkeypatch):
+def test_landing_path_must_stay_inside_the_knowledge_base(client, kb_dir, monkeypatch):
     """纵深防御：即使 `_safe_filename` 被放宽，落盘前的包含性断言也必须拦住。
 
     这里刻意把它换成一个"什么都放行"的实现（模拟一次错误的放宽），
@@ -173,7 +194,7 @@ def test_landing_path_must_stay_inside_the_knowledge_base(kb_dir, monkeypatch):
     monkeypatch.setattr(uf, "_safe_filename", lambda raw: "../../evil.pdf")
     monkeypatch.setattr(uf, "init_rag", lambda p: pytest.fail("不该走到索引"))
 
-    resp = _client().post(
+    resp = client.post(
         "/api/upload", files={"file": ("../../evil.pdf", b"payload", "application/pdf")}
     )
 
@@ -182,12 +203,12 @@ def test_landing_path_must_stay_inside_the_knowledge_base(kb_dir, monkeypatch):
 
 
 # ==================== 大小上限 ====================
-def test_oversized_upload_is_rejected_before_writing(kb_dir, monkeypatch):
+def test_oversized_upload_is_rejected_before_writing(client, kb_dir, monkeypatch):
     """有 Content-Length 时走预检：连临时文件都不会出现。"""
     monkeypatch.setattr(uf, "MAX_UPLOAD_BYTES", 1024)
     monkeypatch.setattr(uf, "init_rag", lambda p: pytest.fail("不该走到索引"))
 
-    resp = _client().post(
+    resp = client.post(
         "/api/upload", files={"file": ("big.pdf", b"x" * 4096, "application/pdf")}
     )
 
@@ -207,14 +228,19 @@ class _FakeUpload:
         return self._chunks.pop(0) if self._chunks else b""
 
 
-def test_oversized_upload_is_caught_while_streaming(kb_dir, monkeypatch):
+def test_oversized_upload_is_caught_while_streaming(client, kb_dir, monkeypatch):
+    """没有 Content-Length 时只能边收边判。
+
+    这条**直接调用端点函数**（绕过 FastAPI 的依赖注入）来模拟 chunked 读取，
+    所以身份要显式传进去 —— 顺带也验证了"身份是参数，不是全局状态"。
+    """
     monkeypatch.setattr(uf, "MAX_UPLOAD_BYTES", 1024)
     monkeypatch.setattr(uf, "init_rag", lambda p: pytest.fail("不该走到索引"))
 
     upload = _FakeUpload("big.pdf", [b"x" * 800, b"y" * 800])
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(uf.upload_file(file=upload))
+        asyncio.run(uf.upload_file(file=upload, principal=_kb_admin_principal()))
 
     assert exc.value.status_code == 413
     assert _saved_files(kb_dir) == [], "超限时必须清掉 .part 半截文件"

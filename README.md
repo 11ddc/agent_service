@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | 检索层（165 条正样本标注集） | 精排后 **R@1 84.8% / R@20 98.2% / MRR 0.901** |
-| 测试 | **394 个用例全绿**，零外部服务（不连 Redis / MySQL / 任何 LLM） |
+| 测试 | **466 个用例全绿**，零外部服务（不连 Redis / MySQL / 任何 LLM）；另有 8 个 `integration` 用例需真 MySQL，默认不跑 |
 | 入库 | 167 份文档 / 1761 个子块 / 98.4 秒，含 2 项安全探针 |
 | 技术栈 | FastAPI · LangGraph · Chroma · BM25(jieba) · MySQL · Redis · DashScope · MCP |
 
@@ -27,9 +27,10 @@
 | Tesseract OCR | 可选 | 只影响扫描件 PDF / 文档内嵌图的文字识别 |
 
 > **只想跑测试？** 不需要任何 key、不需要 MySQL / Redis、不需要模型 —— 克隆完直接
-> `pytest` 就是 **394 个用例全绿**（`tests/conftest.py` 会注入占位 key，所有 LLM 调用都走桩，
+> `pytest` 就是 **466 个用例全绿**（`tests/conftest.py` 会注入占位 key，所有 LLM 调用都走桩，
 > 并且**强制拦截一切非回环出网连接**：真实出网 = 测试失败）。
 > 机器上缺 tesseract 或 CJK 字体时，会跳过 3 个扫描件 OCR 用例（是 skip，不是 fail）。
+> 另有 8 个 `integration` 用例（真 MySQL 的认证链路）默认不跑：`pytest -m integration -q`。
 > 想先确认"这套东西是活的"，这是最快的路径。
 
 ### 1. 克隆 + 装依赖
@@ -117,9 +118,30 @@ venv\Scripts\python.exe main.py
 
 | 接口 | 说明 |
 |---|---|
-| `POST /api/chat` | 一次性问答 |
-| `POST /api/chat/stream` | SSE 流式问答 |
-| `POST /api/upload` | 上传文档入库 |
+| `POST /api/auth/register` | 注册（可用 `AUTH_ALLOW_REGISTRATION=0` 关闭） |
+| `POST /api/auth/login` | 登录，返回访问令牌 + 刷新令牌 |
+| `POST /api/auth/refresh` | 刷新令牌（**轮换**：旧的立即失效） |
+| `POST /api/auth/logout` | 登出（访问令牌**即时**失效） |
+| `GET /api/auth/me` | 当前身份 |
+| `POST /api/auth/users` | 管理员建号（唯一能创建 kb_admin / operator 的入口） |
+| `GET /api/auth/users` | 管理员查看本租户账号 |
+| `POST /api/chat` | 一次性问答（需登录） |
+| `POST /api/chat/stream` | SSE 流式问答（需登录） |
+| `POST /api/upload` | 上传文档入库（需 `kb_admin` 或 admin） |
+
+> **认证是强制的**：三个业务接口都要 `Authorization: Bearer <access_token>`。
+> 缺令牌 401、角色不足 403、账号存储不可用 503（**失败关闭**，绝不放行）。
+>
+> 首个管理员用引导脚本创建（自助注册只能拿到最低角色 `user`）：
+>
+> ```bash
+> # 生成 JWT 密钥（至少 32 字节）并填进 .env 的 AUTH_JWT_SECRET
+> python -c "import secrets;print(secrets.token_urlsafe(48))"
+> BOOTSTRAP_ADMIN_PASSWORD=你的密码 venv\Scripts\python.exe -m auth.bootstrap --username admin
+> ```
+>
+> ⚠️ **开启认证后 MySQL 从"建议"变成"必需"**：账号体系在库里，连不上就 503。
+> 本地演示可以设 `AUTH_ENABLED=0` 关掉认证，但启动会打 WARNING，生产禁用。
 
 > 首次调用检索会加载模型，**冷启动几十秒是正常的**（GPU 加载 2.4GB 精排模型）；
 > 之后复用一个进程内单例，不再重复加载。
@@ -247,7 +269,8 @@ flowchart LR
 | `query_rewrite/` | 改写（带会话历史、短查询闸门）+ Redis 历史读写 |
 | `tools_agent/` | 知识库工具（4 个）+ 工具调用模型 + 工具分派 |
 | `context_budget.py` | token 估算、预算打包、溢出识别 |
-| `db/` · `redis_client.py` | MySQL 文档/父子块存储 · Redis 会话历史与转人工计数窗口 |
+| `db/` · `redis_client.py` | MySQL 文档/父子块/账号存储 · Redis 会话历史与转人工计数窗口 |
+| `auth/` | 认证与授权：bcrypt 密码、JWT 访问令牌、刷新令牌轮换、即时撤销、RBAC、审计、首个管理员引导 |
 | `mcp_client.py` | 外部 MCP 服务接入，工具统一命名空间 `mcp__<server>__<tool>` |
 | `eval/` | 语料生成器（固定 seed）、批量入库、检索召回评测脚本 |
 | `tests/` | 394 个用例，全部零外部服务（出网被强制拦截） |

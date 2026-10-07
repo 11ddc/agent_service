@@ -29,6 +29,15 @@ for _key in (
 ):
     os.environ.setdefault(_key, "test-dummy-key")
 
+# 认证的 JWT 签名密钥单独给：必须**足够长**，否则会被 auth.security._secret()
+# 的强度校验挡下（那正是设计意图：HS256 的密钥就是签名强度本身，
+# 短密钥可以被离线暴力破解 —— PyJWT 自己也会警告）。
+os.environ.setdefault("AUTH_JWT_SECRET", "test-dummy-secret-" + "y" * 40)
+
+# bcrypt 代价参数：生产默认 12（约 250ms 一次），测试里降到 4，
+# 否则光哈希开销就能让整套用例多跑几十秒。**只影响测试进程。**
+os.environ.setdefault("AUTH_BCRYPT_ROUNDS", "4")
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -37,6 +46,35 @@ if str(ROOT) not in sys.path:
 # 只放行回环：Windows 上 asyncio 的内部自管道会用回环 socket，
 # 挡掉它会把 `asyncio.run` 一起弄坏（而好几个模块的同步桥正靠它）。
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", ""}
+
+
+@pytest.fixture
+def as_role():
+    """把测试客户端"当成某个角色"的辅助：覆盖 `require_user` 这个依赖。
+
+    为什么覆盖 `require_user` 而不是逐个接口的角色依赖：
+    接口上的角色校验是 `Depends(require_roles("kb_admin"))` 这样在**导入期生成**的
+    闭包，外部拿不到那个函数对象；而闭包内部依赖的是模块级的 `require_user`，
+    覆盖它就能让整条链拿到我们指定的身份。
+    """
+    from auth.deps import Principal, Role, require_user
+
+    def _apply(app, role: str = "admin", **kwargs):
+        principal = Principal(
+            user_id=kwargs.get("user_id", "u_test"),
+            username=kwargs.get("username", "tester"),
+            role=Role(role),
+            tenant_id=kwargs.get("tenant_id", "default"),
+            customer_id=kwargs.get("customer_id"),
+        )
+
+        async def _override() -> Principal:
+            return principal
+
+        app.dependency_overrides[require_user] = _override
+        return app
+
+    return _apply
 
 
 @pytest.fixture(autouse=True)

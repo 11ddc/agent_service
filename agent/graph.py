@@ -65,6 +65,7 @@ class AgentState(TypedDict):
     meta: dict | None  # 元数组数据
     tool_rounds: int | None  # 工具循环已进行的轮次（硬上限见 GRAPH_RECURSION_LIMIT）
     principal_id: str | None  # **已认证的**身份标识（由 API 层注入；绝不来自客户端）
+    customer_id: str | None  # 已解析的业务客户号（由 API 层注入；工具据此查业务数据）
     messages: Annotated[list, add_messages]
 
 
@@ -185,11 +186,16 @@ def tool_call_node(state: AgentState) -> dict:
         # ── MCP 接入点②:外部 MCP 工具(mcp__<server>__<tool>)由 mcp_client 同步执行
         if tool_name.startswith("mcp__"):
             try:
-                # 身份用 state 里的 **principal_id**（由 API 层从**已认证的身份**注入），
-                # 绝不用客户端传来的 session_id —— 后者可控，等于让调用方自选客户。
-                # MCP 服务端再把 principal 解析成客户号（见 mcp_order_data.resolve_principal）。
+                # 身份有两个来源，都不是模型能控制的：
+                #   · principal_id  —— 已认证的账号（state 由 API 层注入）
+                #   · customer_id   —— 后端已解析好的业务客户号
+                # 绝不用客户端传来的 session_id：它可控，等于让调用方自选客户
+                # （这正是上一轮真实越权的成因）。
                 result = call_mcp_tool(
-                    tool_name, tool_args, caller_id=state.get("principal_id")
+                    tool_name,
+                    tool_args,
+                    caller_id=state.get("principal_id"),
+                    resolved_customer=state.get("customer_id"),
                 )
             except Exception as e:
                 print(f"MCP 工具调用失败: {e}")
@@ -466,6 +472,7 @@ def multi_loop_node(state: AgentState) -> dict:
                 "session_id": state["session_id"],
                 # 身份必须透传：否则子图里的工具调用拿不到 principal（会失败关闭）
                 "principal_id": state.get("principal_id"),
+                "customer_id": state.get("customer_id"),
             },
             config={"recursion_limit": GRAPH_RECURSION_LIMIT},
         )

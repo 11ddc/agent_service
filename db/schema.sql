@@ -40,3 +40,61 @@ CREATE TABLE IF NOT EXISTS `documents` (
   PRIMARY KEY (`doc_id`),
   KEY `idx_uploaded` (`uploaded_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文档元数据：重建一致性校验 + 切分参数版本管理';
+
+-- ════════════════════════════════════════════════════════════════════
+-- 认证与授权
+--
+-- 三条设计约定（都是"失败关闭"方向）：
+--   1. 密码只存 bcrypt 哈希，永远不存明文、也不写进日志；
+--   2. 刷新令牌只存 sha256 哈希 —— 库被读走也不能直接拿来登录；
+--   3. 审计日志单独一张表：企业要能回答"谁在什么时候做了什么"。
+-- ════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS `users` (
+  `user_id`       varchar(32)  NOT NULL COMMENT '主键 = "u_" + 26 位随机串',
+  `username`      varchar(64)  NOT NULL COMMENT '登录名（同一租户内唯一）',
+  `display_name`  varchar(64)  DEFAULT NULL COMMENT '展示名',
+  `password_hash` varchar(200) NOT NULL COMMENT 'bcrypt 哈希（自带算法与代价参数）',
+  `role`          varchar(20)  NOT NULL COMMENT 'admin / kb_admin / operator / user',
+  `customer_id`   varchar(32)  DEFAULT NULL COMMENT '业务客户号：认证层据此把账号映射到订单/工单等业务数据',
+  `tenant_id`     varchar(32)  NOT NULL DEFAULT 'default' COMMENT '租户：数据隔离维度',
+  `status`        varchar(20)  NOT NULL DEFAULT 'active' COMMENT 'active / disabled',
+  `created_at`    datetime     NOT NULL,
+  `updated_at`    datetime     NOT NULL,
+  `last_login_at` datetime     DEFAULT NULL,
+  `failed_logins` int          NOT NULL DEFAULT 0 COMMENT '连续登录失败次数',
+  `locked_until`  datetime     DEFAULT NULL COMMENT '锁定到期时间（防在线爆破）',
+  PRIMARY KEY (`user_id`),
+  UNIQUE KEY `uq_tenant_username` (`tenant_id`, `username`),
+  KEY `idx_role` (`role`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号：密码只存 bcrypt 哈希';
+
+CREATE TABLE IF NOT EXISTS `refresh_tokens` (
+  `token_hash` char(64)     NOT NULL COMMENT 'sha256(刷新令牌)；明文只在响应里出现一次',
+  `user_id`    varchar(32)  NOT NULL,
+  `issued_at`  datetime     NOT NULL,
+  `expires_at` datetime     NOT NULL,
+  `revoked_at` datetime     DEFAULT NULL COMMENT '登出或轮换时写入',
+  `user_agent` varchar(255) DEFAULT NULL COMMENT '便于"我在哪些设备登录过"',
+  PRIMARY KEY (`token_hash`),
+  KEY `idx_user` (`user_id`),
+  KEY `idx_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='刷新令牌：只存哈希，可撤销可轮换';
+
+CREATE TABLE IF NOT EXISTS `audit_log` (
+  `id`         bigint       NOT NULL AUTO_INCREMENT,
+  `created_at` datetime     NOT NULL,
+  `actor_id`   varchar(32)  DEFAULT NULL COMMENT '操作者 user_id；匿名操作（注册、登录失败）为空',
+  `actor_name` varchar(64)  DEFAULT NULL,
+  `tenant_id`  varchar(32)  DEFAULT NULL,
+  `action`     varchar(64)  NOT NULL COMMENT 'auth.register / auth.login / kb.upload / kb.publish 等',
+  `target`     varchar(255) DEFAULT NULL COMMENT '被操作对象：文件名、工单号等',
+  `result`     varchar(20)  NOT NULL COMMENT 'ok / denied / failed',
+  `detail`     varchar(500) DEFAULT NULL COMMENT '补充信息；严禁写入密钥、完整手机号等敏感值',
+  `request_id` varchar(64)  DEFAULT NULL COMMENT '与结构化日志关联',
+  `client_ip`  varchar(64)  DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_created` (`created_at`),
+  KEY `idx_actor` (`actor_id`),
+  KEY `idx_action` (`action`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审计日志：谁在什么时候做了什么、结果如何';
