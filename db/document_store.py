@@ -16,7 +16,8 @@ from db.mysql import mysql_cursor
 
 _COLUMNS = (
     "doc_id, filename, source, uploaded_at, parsed_status, error_msg, "
-    "chunk_count, parent_count, chunk_schema_ver"
+    "chunk_count, parent_count, chunk_schema_ver, "
+    "tenant_id, owner_id, visibility, status, published_at, published_by"
 )
 
 STATUS_OK = "ok"
@@ -34,6 +35,13 @@ class DocumentRow:
     chunk_count: int
     parent_count: int
     chunk_schema_ver: str | None
+    # ↓ ACL 与审核状态（A4）。带默认值放在末尾，保持既有按位置构造的调用兼容。
+    tenant_id: str = "default"
+    owner_id: str | None = None
+    visibility: str = "tenant"
+    status: str = "draft"
+    published_at: datetime | None = None
+    published_by: str | None = None
 
 
 def _row_to_document(row: tuple) -> DocumentRow:
@@ -47,6 +55,12 @@ def _row_to_document(row: tuple) -> DocumentRow:
         chunk_count=row[6] or 0,
         parent_count=row[7] or 0,
         chunk_schema_ver=row[8],
+        tenant_id=row[9] or "default",
+        owner_id=row[10],
+        visibility=row[11] or "tenant",
+        status=row[12] or "draft",
+        published_at=row[13],
+        published_by=row[14],
     )
 
 
@@ -67,14 +81,20 @@ class DocumentStore:
         parent_count: int,
         chunk_schema_ver: str | None,
         error_msg: str | None,
+        acl: dict | None = None,
     ) -> None:
+        acl = acl or {}
         with mysql_cursor() as cur:
             cur.execute(
                 "INSERT INTO documents "
                 "(doc_id, filename, source, uploaded_at, parsed_status, error_msg, "
-                " chunk_count, parent_count, chunk_schema_ver) "
-                "VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s) "
-                # 同一个文件重新上传时刷新全部字段：uploaded_at 语义是"最近一次入库时间"
+                " chunk_count, parent_count, chunk_schema_ver, "
+                " tenant_id, owner_id, visibility, status) "
+                "VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                # 同一个文件重新上传时刷新全部字段：uploaded_at 语义是"最近一次入库时间"。
+                #
+                # ⚠️ ACL 字段也一起刷新：**重新上传 = 内容变了 = 需要重新审核**。
+                #    所以之前已发布的文档重新上传后会回到 draft（审核状态不会被继承）。
                 "ON DUPLICATE KEY UPDATE "
                 " filename = VALUES(filename), source = VALUES(source), "
                 " uploaded_at = VALUES(uploaded_at), "
@@ -82,7 +102,10 @@ class DocumentStore:
                 " error_msg = VALUES(error_msg), "
                 " chunk_count = VALUES(chunk_count), "
                 " parent_count = VALUES(parent_count), "
-                " chunk_schema_ver = VALUES(chunk_schema_ver)",
+                " chunk_schema_ver = VALUES(chunk_schema_ver), "
+                " tenant_id = VALUES(tenant_id), owner_id = VALUES(owner_id), "
+                " visibility = VALUES(visibility), status = VALUES(status), "
+                " published_at = NULL, published_by = NULL",
                 (
                     doc_id,
                     filename,
@@ -92,6 +115,10 @@ class DocumentStore:
                     chunk_count,
                     parent_count,
                     chunk_schema_ver,
+                    acl.get("tenant_id", "default"),
+                    acl.get("owner_id"),
+                    acl.get("visibility", "tenant"),
+                    acl.get("status", "draft"),
                 ),
             )
 
@@ -103,6 +130,7 @@ class DocumentStore:
         chunk_count: int,
         parent_count: int,
         chunk_schema_ver: str,
+        acl: dict | None = None,
     ) -> None:
         self._upsert(
             doc_id,
@@ -113,6 +141,7 @@ class DocumentStore:
             parent_count,
             chunk_schema_ver,
             None,
+            acl,
         )
 
     def mark_failed(
@@ -122,10 +151,81 @@ class DocumentStore:
         source: str,
         error_msg: str,
         chunk_schema_ver: str | None = None,
+        acl: dict | None = None,
     ) -> None:
         self._upsert(
-            doc_id, filename, source, STATUS_FAILED, 0, 0, chunk_schema_ver, error_msg[:2000]
+            doc_id,
+            filename,
+            source,
+            STATUS_FAILED,
+            0,
+            0,
+            chunk_schema_ver,
+            error_msg[:2000],
+            acl,
         )
+
+    def set_status(self, doc_id: str, status: str, published_by: str | None = None) -> int:
+        """改审核状态。只有切到 `published` 才写 published_at/published_by。"""
+        with mysql_cursor() as cur:
+            cur.execute(
+                "UPDATE documents SET status = %s, "
+                " published_at = CASE WHEN %s = 'published' THEN NOW() ELSE published_at END, "
+                " published_by = CASE WHEN %s = 'published' THEN %s ELSE published_by END "
+                "WHERE doc_id = %s",
+                (status, status, status, published_by, doc_id),
+            )
+            return int(cur.rowcount or 0)
+
+    def set_visibility(self, doc_id: str, visibility: str) -> int:
+        with mysql_cursor() as cur:
+            cur.execute(
+                "UPDATE documents SET visibility = %s WHERE doc_id = %s",
+                (visibility, doc_id),
+            )
+            return int(cur.rowcount or 0)
+
+    def backfill_acl(
+        self,
+        doc_id: str,
+        *,
+        tenant_id: str,
+        owner_id: str | None,
+        visibility: str,
+        status: str,
+    ) -> int:
+        """给**存量**文档回填 ACL（供 `python -m rag.acl_backfill` 使用）。
+
+        为什么要有它：ACL 新列的默认值是 `draft` —— 存量文档会被判为"待审核"从而
+        检索不到。回填把它们标成"本租户已发布"，最接近上线 ACL 之前的实际行为。
+        """
+        with mysql_cursor() as cur:
+            cur.execute(
+                "UPDATE documents SET tenant_id = %s, owner_id = %s, visibility = %s, "
+                "status = %s, published_at = CASE WHEN %s = 'published' THEN NOW() "
+                "ELSE published_at END, published_by = 'backfill' WHERE doc_id = %s",
+                (tenant_id, owner_id, visibility, status, status, doc_id),
+            )
+            return int(cur.rowcount or 0)
+
+    def list_by_status(
+        self, status: str | None = None, tenant_id: str | None = None, limit: int = 200
+    ) -> list[DocumentRow]:
+        limit = max(1, min(int(limit), 1000))
+        sql = f"SELECT {_COLUMNS} FROM documents"
+        conds, args = [], []
+        if status:
+            conds.append("status = %s")
+            args.append(status)
+        if tenant_id:
+            conds.append("tenant_id = %s")
+            args.append(tenant_id)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += f" ORDER BY uploaded_at DESC LIMIT {limit}"
+        with mysql_cursor() as cur:
+            cur.execute(sql, tuple(args))
+            return [_row_to_document(row) for row in cur.fetchall()]
 
     def get(self, doc_id: str) -> DocumentRow | None:
         with mysql_cursor() as cur:

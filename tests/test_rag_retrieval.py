@@ -302,7 +302,10 @@ class _FakeVectorStore:
         self._results = search_results or []
         self._raise = raise_on_search
 
-    def similarity_search(self, query, k):
+    def similarity_search(self, query, k, filter=None):
+        # ACL 改造后 retrieve 会下推 filter（dense 通道的权限边界），
+        # 替身必须接受它；这里顺便记下来，供断言"过滤器确实传下去了"
+        self.last_filter = filter
         if self._raise:
             raise RuntimeError("embedding 服务不可用")
         return self._results
@@ -335,6 +338,9 @@ def test_retrieve_fuses_dense_and_sparse(monkeypatch):
 
     # d2 被两路同时命中(各 rank1)→ 分数最高排第一;d1 > d3(rank 更靠前)
     assert [d.page_content for d in out] == ["运费险说明", "苹果退货政策", "保修期说明"]
+    # dense 通道必须带上 ACL 过滤（默认 ACL 开启）
+    assert store.last_filter is not None
+    assert "$and" in store.last_filter
 
 
 def test_retrieve_degrades_to_sparse_when_dense_fails(monkeypatch):

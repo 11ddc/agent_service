@@ -30,6 +30,7 @@ import os
 from langchain_core.tools import tool
 
 from db import DocumentStore, MySQLUnavailable, parent_store
+from rag import acl as rag_acl
 from rag.rag import KnowledgeBaseError, reordering, retrieve_sync
 
 logger = logging.getLogger(__name__)
@@ -229,7 +230,14 @@ def search_in_document(query: str, filename: str, top_k: int = 5) -> str:
 
     try:
         store = _ready_store()
-        docs = store.similarity_search(query, k, filter={"source": target.source})
+        # ⚠️ ACL 必须与"限定文档"这个条件**合并**后一起下推给 Chroma：
+        # 只传 source 等于绕过了文档级权限 —— 而这条路径正是用户说
+        # "帮我看看某份文档里怎么写的"时走的。
+        # （merge_filters 会展开一层 $and：Chroma 不接受 $and 里套 $and）
+        where = rag_acl.merge_filters(
+            {"source": target.source}, rag_acl.current_acl().chroma_filter()
+        )
+        docs = store.similarity_search(query, k, filter=where)
     except KnowledgeBaseError as e:
         logger.warning("限定文档检索工具降级: %s", e)
         return f"知识库当前不可用（{e}），请稍后重试。"

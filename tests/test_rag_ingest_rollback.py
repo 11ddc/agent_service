@@ -58,8 +58,13 @@ def _wire(monkeypatch, store):
     monkeypatch.setattr(
         rag,
         "_record_document",
-        lambda source, chunk_count, parent_count, error=None: records.append(
-            {"chunks": chunk_count, "parents": parent_count, "error": error}
+        lambda source, chunk_count, parent_count, error=None, acl_meta=None: records.append(
+            {
+                "chunks": chunk_count,
+                "parents": parent_count,
+                "error": error,
+                "acl_meta": acl_meta,
+            }
         ),
     )
     return records
@@ -78,7 +83,7 @@ def test_success_path_adds_before_deleting_stale_ids(monkeypatch):
     assert deleted == {"p_old|0", "p_old|1"}, "只删本次没写进去的旧块"
     assert deleted.isdisjoint(added), "新块不能被自己的清理步骤删掉"
     assert set(store.existing) == added, "清理后库里恰好剩新块"
-    assert records == [{"chunks": 1, "parents": 1, "error": None}]
+    assert records[0]["chunks"] == 1 and records[0]["parents"] == 1 and records[0]["error"] is None
 
 
 def test_reupload_with_same_ids_deletes_nothing(monkeypatch):
@@ -134,10 +139,12 @@ def test_empty_split_does_not_wipe_existing_blocks(monkeypatch):
     """切不出子块时（罕见）宁可留着旧版本，也不要把文档清空。"""
     store = _FakeStore(existing_ids=["keep|0"])
     records = _wire(monkeypatch, store)
-    monkeypatch.setattr(rag, "_split_document", lambda source, sections: ([], []))
+    monkeypatch.setattr(
+        rag, "_split_document", lambda source, sections, acl_meta=None: ([], [])
+    )
 
     assert rag.init_rag("F:/kb/手册.pdf") == 0
 
     assert store.events == [], "既不该 add 也不该 delete"
     assert store.existing == ["keep|0"]
-    assert records == [{"chunks": 0, "parents": 0, "error": None}]
+    assert records[0]["chunks"] == 0 and records[0]["parents"] == 0 and records[0]["error"] is None

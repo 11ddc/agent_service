@@ -175,3 +175,23 @@ TRUST_PROXY_HEADERS = _env_bool("TRUST_PROXY_HEADERS", False)
 RATE_LIMIT_ENABLED = _env_bool("RATE_LIMIT_ENABLED", True)
 RATE_LIMIT_PER_MINUTE = _env_int("RATE_LIMIT_PER_MINUTE", 30)  # 每用户每分钟
 RATE_LIMIT_BURST = _env_int("RATE_LIMIT_BURST", 10)  # 允许的瞬时突发
+
+# ════════════════════════════════════════════════════════════
+# 知识库 ACL 与审核发布
+#
+# 企业知识库里既有"全员可见的手册"，也有"只有售后能看的内部判责标准"。
+# 检索不做权限过滤 = 把内部文档发给所有用户，所以 ACL 默认**开启**。
+#
+# ⚠️ 开启后，**缺少 ACL 元数据的历史块会被判为不可见**（失败方向是"拒绝"），
+#    存量库需要跑一次回填：python -m rag.acl_backfill
+#    ACL_ENABLED=false 会退回"不过滤"，只应出现在本地演示。
+# ════════════════════════════════════════════════════════════
+ACL_ENABLED = _env_bool("ACL_ENABLED", True)
+ACL_DEFAULT_VISIBILITY = (
+    os.getenv("ACL_DEFAULT_VISIBILITY") or "tenant"
+).strip().lower()
+
+# 上传后是否需要审核才能被检索到。
+# true（企业默认）：上传 → draft（检索不到）→ 审核发布 → published
+# false（本地图省事）：上传即 published
+ACL_REQUIRE_APPROVAL = _env_bool("ACL_REQUIRE_APPROVAL", True)

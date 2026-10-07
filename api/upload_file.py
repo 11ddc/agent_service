@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from auth import audit
 from auth.deps import Principal, require_roles
 from body_limit import MAX_UPLOAD_BYTES
+from config import ACL_DEFAULT_VISIBILITY, ACL_REQUIRE_APPROVAL
+from rag import acl as rag_acl
 from rag.rag import init_rag
+from rag.structure import doc_id_of as doc_store_id
 
 logger = logging.getLogger(__name__)
 
@@ -186,23 +189,40 @@ async def upload_file(
         part_path.unlink(missing_ok=True)  # 成功时已被 replace 掉，这里是失败清理
 
     # 4. 索引（解析+embedding+入库是重活，丢线程池，别卡事件循环）
-    doc_count = await asyncio.to_thread(init_rag, str(file_path))
+    #
+    # ACL：新文档的租户/归属来自**已认证身份**，可见性来自配置，
+    # 状态取决于是否需要审核（默认需要 → draft，检索不到，等审核发布）。
+    acl_meta = rag_acl.acl_metadata(
+        rag_acl.Acl.of(principal),
+        status=(
+            rag_acl.STATUS_DRAFT
+            if ACL_REQUIRE_APPROVAL
+            else rag_acl.STATUS_PUBLISHED
+        ),
+        visibility=ACL_DEFAULT_VISIBILITY,
+    )
+    doc_count = await asyncio.to_thread(init_rag, str(file_path), acl_meta)
 
     # 5. 审计：谁上传了什么、结果如何。知识库变更属于必须留痕的操作。
+    doc_id = doc_store_id(str(file_path))
     await audit.record(
         "kb.upload",
         "ok",
         request=None,
         principal=principal,
         target=filename,
-        detail=f"bytes={written} chunks={doc_count}",
+        detail=(
+            f"bytes={written} chunks={doc_count} "
+            f"visibility={acl_meta['visibility']} status={acl_meta['status']}"
+        ),
     )
     logger.info(
-        "上传完成 user=%s file=%s bytes=%s chunks=%s",
+        "上传完成 user=%s file=%s bytes=%s chunks=%s status=%s",
         principal.user_id,
         filename,
         written,
         doc_count,
+        acl_meta["status"],
     )
 
     return {
@@ -210,4 +230,13 @@ async def upload_file(
         "filename": filename,
         # "file_size": written,
         "document_count": doc_count,
+        "doc_id": doc_id,
+        "status": acl_meta["status"],
+        "visibility": acl_meta["visibility"],
+        # 需要审核时明确告诉调用方"还没生效"，免得以为传了就能被检索到
+        "note": (
+            "文档已入库，但处于待审核状态，审核发布后才会参与回答"
+            if acl_meta["status"] == rag_acl.STATUS_DRAFT
+            else "文档已入库并发布"
+        ),
     }

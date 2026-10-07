@@ -162,7 +162,11 @@ def test_search_in_document_filters_chroma_by_real_source(monkeypatch, fake_stor
         {"query": "保修多久", "filename": "售后服务政策_v2_2025.docx"}
     )
 
-    assert captured["filter"] == {"source": "F:/kb/售后服务政策_v2_2025.docx"}
+    # ACL 改造后，下推给 Chroma 的是"限定文档 + 文档级权限"**合并**后的过滤器 ——
+    # 只传 source 等于绕过权限（这条路径正是"帮我看看某份文档"走的）
+    where = captured["filter"]
+    assert {"source": "F:/kb/售后服务政策_v2_2025.docx"} in where["$and"]
+    assert any("status" in cond for cond in where["$and"]), "缺少 ACL 条件"
     assert "保修期为 24 个月。" in out
 
 
@@ -193,7 +197,7 @@ def test_search_in_document_matches_filename_by_partial_name(monkeypatch, fake_s
 
     out = kb.search_in_document.invoke({"query": "保修", "filename": "售后服务政策"})
 
-    assert captured["filter"] == {"source": "F:/kb/售后服务政策_v2_2025.docx"}
+    assert {"source": "F:/kb/售后服务政策_v2_2025.docx"} in captured["filter"]["$and"]
     assert "没有名为" not in out
 
 

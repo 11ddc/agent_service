@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import threading
+from functools import partial
 from pathlib import Path
 
 import jieba
@@ -25,6 +26,7 @@ from rank_bm25 import BM25Okapi
 
 import config
 from config import CHROMA_COLLECTION, CHROMA_SPACE  # 顺带在最早期设置 HF_ENDPOINT
+from rag import acl as rag_acl  # 文档级访问控制：检索的两条通道都必须过滤
 
 # 父块存储（MySQL）。注意 db 包在 import 时不连库、不 import 驱动，
 # 所以 MySQL 挂着也不会影响本模块启动
@@ -806,6 +808,7 @@ def _record_document(
     chunk_count: int,
     parent_count: int,
     error: str | None = None,
+    acl_meta: dict | None = None,
 ) -> None:
     """写 documents 表。
 
@@ -817,17 +820,23 @@ def _record_document(
     try:
         store = DocumentStore()
         if error:
-            store.mark_failed(doc_id, filename, source, error, CHUNK_SCHEMA_VER)
+            store.mark_failed(doc_id, filename, source, error, CHUNK_SCHEMA_VER, acl_meta)
         else:
             store.mark_ok(
-                doc_id, filename, source, chunk_count, parent_count, CHUNK_SCHEMA_VER
+                doc_id,
+                filename,
+                source,
+                chunk_count,
+                parent_count,
+                CHUNK_SCHEMA_VER,
+                acl_meta,
             )
     except MySQLUnavailable as e:
-        print(f"[文档元数据] 写入失败（不影响检索）: {e}")
+        logger.warning("[文档元数据] 写入失败（不影响检索）: %s", e)
 
 
 def _split_document(
-    source: str, sections: list[Section]
+    source: str, sections: list[Section], acl_meta: dict | None = None
 ) -> tuple[list[dict], list[tuple[str, str, dict]]]:
     """结构单元 → (父块列表, 子块三元组)。
 
@@ -835,6 +844,9 @@ def _split_document(
 
     父块是 dict：{pid, text, breadcrumb, page_start, page_end, section_path, atomic}
     子块三元组是 (child_id, 子块正文, Chroma metadata)。
+
+    `acl_meta`（tenant_id / owner_id / visibility / status）会原样写进每个子块的
+    metadata —— 检索侧**两条通道**都靠它过滤（见 rag/acl.py）。
 
     ## 两条关键规则（v3 改造时曾丢掉，实测老 chunk 有、新 chunk 没有）
 
@@ -885,6 +897,8 @@ def _split_document(
                 # ↓ 新增：引用可核验 + 让检索侧知道这块是表格/图片
                 "atomic": parent["atomic"],
                 "chunk_schema_ver": CHUNK_SCHEMA_VER,
+                # ↓ ACL 与审核状态：dense（Chroma where）与 sparse（BM25）都靠它过滤
+                **(acl_meta or {}),
             }
             # Chroma 拒绝 None：数值/文本类字段取不到就**不写这个键**，别写 0 假装有值
             if parent["breadcrumb"]:
@@ -898,23 +912,25 @@ def _split_document(
     return parents, children
 
 
-def init_rag(file_path: str) -> int:
+def init_rag(file_path: str, acl_meta: dict | None = None) -> int:
     """单个文档入库的**对外入口**：任何一步失败都留痕，然后把异常上抛。
 
     为什么要包这一层：GBK 编码的 txt、损坏的 PDF 会在 `_load_file` 就抛异常，
     那时 documents 表还一个字都没写过。实测结果是——接口返回 500，但库里查不到
     "这个文件曾经来过"（38 行里只有空文件那条 failed）。失败必须留痕，否则运维
     只能看到一次 500，查不出是哪个文件没进库。
+
+    `acl_meta`：租户 / 归属 / 可见性 / 审核状态，写进每个子块与 documents 表。
     """
     try:
-        return _init_rag(file_path)
+        return _init_rag(file_path, acl_meta)
     except Exception as e:
-        print(f"[入库] {file_path} 失败: {e!r}")
-        _record_document(file_path, 0, 0, error=f"入库失败: {type(e).__name__}: {e}")
+        logger.warning("[入库] %s 失败: %r", file_path, e)
+        _record_document(file_path, 0, 0, error=f"入库失败: {type(e).__name__}: {e}", acl_meta=acl_meta)
         raise
 
 
-def _init_rag(file_path: str) -> int:
+def _init_rag(file_path: str, acl_meta: dict | None = None) -> int:
     """（正文）解析 → 两级切分 → 父块写 MySQL、子块写 Chroma。
 
     ## 写入顺序
@@ -933,11 +949,11 @@ def _init_rag(file_path: str) -> int:
     """
     sections = _load_file(file_path)  # 只加载新上传的文件
     if not sections:
-        print(f"文件 {file_path} 未加载到任何文档")
-        _record_document(file_path, 0, 0, error="未解析出任何内容")
+        logger.warning("文件 %s 未加载到任何文档", file_path)
+        _record_document(file_path, 0, 0, error="未解析出任何内容", acl_meta=acl_meta)
         return 0
     # 切分 大块和小块
-    parents, children = _split_document(file_path, sections)
+    parents, children = _split_document(file_path, sections, acl_meta)
     print(f"[切分] {file_path}: {len(parents)} 个父块 / {len(children)} 个子块")
 
     # ① 父块 → MySQL（先父后子）
@@ -985,9 +1001,37 @@ def _init_rag(file_path: str) -> int:
         raise
 
     # ③ 文档元数据（记录性数据，失败不影响检索）
-    _record_document(file_path, len(children), len(parents))
+    _record_document(file_path, len(children), len(parents), acl_meta=acl_meta)
 
     return len(children)
+
+
+def update_document_acl(source: str, **fields) -> int:
+    """更新某文档**全部子块**的 ACL metadata（审核发布 / 下架 / 改可见性）。
+
+    返回更新的块数。Chroma 里没有块时返回 0（例如文档解析失败过）。
+
+    做法是"读出旧 metadata → 合并 → 写回"，而不是只写 ACL 那几个键：
+    Chroma 的 update 对 metadata 的语义是**替换**，只写部分键有丢掉
+    source / breadcrumb / parent_id 的风险 —— 那会让引用与父子扩展一起失效。
+    """
+    global _vectorstore
+    if _vectorstore is None:
+        _ensure_ready()
+    if _vectorstore is None:
+        raise KnowledgeBaseError("知识库连接失败，请检查后重试。")
+
+    data = _vectorstore.get(where={"source": source})
+    ids = list(data.get("ids") or [])
+    metas = list(data.get("metadatas") or [])
+    if not ids:
+        return 0
+
+    merged = [dict(m or {}, **fields) for m in metas]
+    _vectorstore._collection.update(ids=ids, metadatas=merged)
+    # 元数据变了但块数没变 → 必须显式让 BM25 缓存失效，否则权限变更不生效
+    invalidate_index_cache()
+    return len(ids)
 
 
 # ==================== 多路召回（dense + BM25 → RRF 融合）====================
@@ -1067,10 +1111,27 @@ def _build_bm25_index() -> None:
             _bm25, _bm25_corpus, _chunk_docs = None, [], []
 
 
+def invalidate_index_cache() -> None:
+    """让 BM25 索引在下次查询时重建。
+
+    ⚠️ 发布/下架/改可见性只改 metadata、**不改块数**，而 `_sparse_search` 的重建
+    条件是"块数变了" —— 不显式失效的话，缓存里还是旧的 status，
+    表现为"**已经下架的文档仍然被检索到**"，而且不报错。
+    """
+    global _bm25
+    _bm25 = None
+
+
 def _sparse_search(query: str, k: int) -> list[Document]:
     """BM25 关键词路：jieba 分词 → 取分数最高的 k 个 chunk（0 分视为未命中）。
 
     BM25 是内存索引，上传新文档后通过 chunk 数量变化自动触发重建。
+    发布/下架只改 metadata、不改块数，所以那些操作要显式调用
+    `invalidate_index_cache()`，否则缓存里还是旧的 status（权限变更不生效）。
+
+    ⚠️ **必须在这里做 ACL 过滤**：BM25 是对**全量语料**打分的，
+    只给 Chroma 加 where 的话，被限制的文档照样会从这一路被召回出来 ——
+    这是 ACL 最容易漏的一处。
     """
     global _bm25, _chunk_docs
     if _vectorstore is None:
@@ -1078,25 +1139,24 @@ def _sparse_search(query: str, k: int) -> list[Document]:
     try:
         # _chunk_docs   分词语料，用来和用户的问题分词之后进行对比
         # 文档有更新或者第一次拿到锁的用户才会触发建立索引
-        print("bm25111", _bm25)
         if _bm25 is None or len(_chunk_docs) != _vectorstore._collection.count():
             _build_bm25_index()
-            print("bm25333", _bm25)
 
     except Exception as e:
-        print(f"BM25 索引一致性检查失败: {e}")
+        logger.warning("BM25 索引一致性检查失败: %s", e)
     if _bm25 is None or not _chunk_docs:
         return []
 
     # 将用户问题分词然后对每个文档进行打分，这里清洗用户问题要和建立索引时一致
     scores = _bm25.get_scores(jieba.lcut(_clean_query(query)))
 
-    print("分数列表：scores", scores)
-
-    # sorted从小到大排序，这里取负从大到小并取k个
-    ranked = sorted(range(len(scores)), key=lambda i: -scores[i])[:k]
-
-    print("取前k个切片对应的分数从大到小：", ranked)
+    # 先按 ACL 缩小候选，再排序取 top-k —— 顺序很重要：
+    # 若先取 top-k 再过滤，可见块数可能不足 k（被权限"挤掉"了本该返回的结果）
+    acl = rag_acl.current_acl()
+    candidates = [
+        i for i, doc in enumerate(_chunk_docs) if acl.allows(doc.metadata or {})
+    ]
+    ranked = sorted(candidates, key=lambda i: -scores[i])[:k]
     # 根据切片分筛选   拿到命中的切片
     return [_chunk_docs[i] for i in ranked if scores[i] > 0]
 
@@ -1200,8 +1260,13 @@ async def retrieve(query: str, k: int = TOP_K) -> list[Document]:
 
     # 两路召回：异步并行执行
     # 语义相似度搜索
-    # 任务对象（Task） 下面这两条都没有运行只是创建对象
-    dense_task = asyncio.to_thread(_vectorstore.similarity_search, query, fetch_k)
+    # ⚠️ 必须带 ACL 过滤：这是 dense 通道的权限边界（sparse 通道在 _sparse_search 里）
+    acl_where = rag_acl.current_acl().chroma_filter()
+    dense_task = asyncio.to_thread(
+        partial(_vectorstore.similarity_search, query, fetch_k, filter=acl_where)
+    ) if acl_where else asyncio.to_thread(
+        _vectorstore.similarity_search, query, fetch_k
+    )
     # bm25检索
     # 返回命中的原文档数据_chunk_docs
     sparse_task = asyncio.to_thread(_sparse_search, query, fetch_k)

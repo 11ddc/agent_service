@@ -68,8 +68,9 @@ def _saved_files(kb_dir: Path) -> list[str]:
 def test_valid_upload_saves_file_and_indexes_it(client, kb_dir, monkeypatch):
     seen = {}
 
-    def _fake_init_rag(path):
+    def _fake_init_rag(path, acl_meta=None):
         seen["path"] = path
+        seen["acl_meta"] = acl_meta
         return 7
 
     monkeypatch.setattr(uf, "init_rag", _fake_init_rag)
@@ -79,12 +80,16 @@ def test_valid_upload_saves_file_and_indexes_it(client, kb_dir, monkeypatch):
         files={"file": ("客服手册.pdf", b"%PDF-1.4 fake", "application/pdf")},
     )
 
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "success": True,
-        "filename": "客服手册.pdf",
-        "document_count": 7,
-    }
+    body = resp.json()
+    assert body["success"] is True
+    assert body["filename"] == "客服手册.pdf"
+    assert body["document_count"] == 7
+    # ACL 改造后上传默认进"待审核"：必须把状态与 doc_id 明确回给调用方，
+    # 否则调用方不知道"传完了为什么还检索不到"，也没法去调发布接口
+    assert body["status"] in ("draft", "published")
+    assert body["visibility"] in ("tenant", "private", "public")
+    assert body["doc_id"]
+    assert body["note"]
     saved = kb_dir / "客服手册.pdf"
     assert saved.read_bytes() == b"%PDF-1.4 fake"
     assert seen["path"] == str(saved), "传给 init_rag 的应是落盘后的绝对路径"

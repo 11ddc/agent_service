@@ -19,6 +19,7 @@ from agent.graph import (  # LangGraph 编排图（拆分→意图→路由→�
 from auth.deps import Principal, require_user
 from intent.examples import HANDOFF_RE
 from query_rewrite import aappend_history
+from rag import acl as rag_acl
 from redis_client import redis_client
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,22 @@ def _session_key(principal: Principal, client_session_id: str) -> str:
     return f"{principal.session_scope}:{client_session_id}"
 
 
+def _invoke_graph(payload: dict, acl: rag_acl.Acl):
+    """在工作线程里跑图，并把**该请求的 ACL** 装进上下文。
+
+    为什么走 ContextVar 而不是加参数：检索是由图节点、以及 Agent 的工具函数间接
+    调用的，而工具函数的签名由**LLM 的工具 schema** 决定（加个 acl 参数等于把它
+    暴露给模型）。ContextVar 让"一次请求一个 ACL"自然成立。
+
+    装在 worker 函数内部是刻意的：不依赖线程池是否传播上下文。
+    """
+    token = rag_acl.set_acl(acl)
+    try:
+        return graph.invoke(payload, {"recursion_limit": GRAPH_RECURSION_LIMIT})
+    finally:
+        rag_acl.reset_acl(token)
+
+
 @router.post("/chat")
 async def chat(request: ChatRequest, principal: Principal = Depends(require_user)):
     """同步聊天 — 编排图执行：拆分→意图路由→(短路/RAG/Agent)→汇总
@@ -126,7 +143,7 @@ async def chat(request: ChatRequest, principal: Principal = Depends(require_user
         # 协程对象就是你调用一个 async def 函数时，返回的那个东西
         # create_task 只能接收协程对象（接收任务会报错，gather是两个都可以）创建task 放入事件循环 等待执行
         result = await asyncio.to_thread(
-            graph.invoke,
+            _invoke_graph,
             {
                 "question": request.question,
                 "session_id": session_key,
@@ -136,8 +153,7 @@ async def chat(request: ChatRequest, principal: Principal = Depends(require_user
                 "principal_id": principal.user_id,
                 "customer_id": principal.customer_id,
             },
-            # 整图步数上限：工具循环是个环，不设的话 langgraph 按 10007 走
-            {"recursion_limit": GRAPH_RECURSION_LIMIT},
+            rag_acl.Acl.of(principal),
         )
 
         answer = result.get("answer") or ""
@@ -187,8 +203,8 @@ def _sse(event: dict) -> dict:
     return {"event": event["type"], "data": json.dumps(event, ensure_ascii=False)}
 
 
-def _run_graph_with_emitter(emitter, payload: dict):
-    """在工作线程里跑图，并把 emitter 装进**该线程**的上下文。
+def _run_graph_with_emitter(emitter, payload: dict, acl: rag_acl.Acl | None = None):
+    """在工作线程里跑图，并把 emitter 与 ACL 装进**该线程**的上下文。
 
     装在 worker 函数内部是刻意的：langgraph 提交节点时会在当前线程
     copy_context()（langgraph/pregel/_executor.py:64），所以这里设置的值能被
@@ -196,9 +212,12 @@ def _run_graph_with_emitter(emitter, payload: dict):
     的上下文拷贝行为 —— 那样也能work，但不如此处直接。
     """
     token = set_emitter(emitter)
+    acl_token = rag_acl.set_acl(acl) if acl is not None else None
     try:
         return graph.invoke(payload, {"recursion_limit": GRAPH_RECURSION_LIMIT})
     finally:
+        if acl_token is not None:
+            rag_acl.reset_acl(acl_token)
         reset_emitter(token)
 
 
@@ -242,6 +261,7 @@ async def chat_stream(
                     "principal_id": principal.user_id,
                     "customer_id": principal.customer_id,
                 },
+                rag_acl.Acl.of(principal),
             )
             final_answer = result.get("answer") or ""
 

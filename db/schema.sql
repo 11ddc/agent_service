@@ -37,9 +37,16 @@ CREATE TABLE IF NOT EXISTS `documents` (
   `chunk_count`      int          DEFAULT 0 COMMENT '子块数（Chroma）',
   `parent_count`     int          DEFAULT 0 COMMENT '父块数（MySQL）',
   `chunk_schema_ver` varchar(20)  DEFAULT NULL COMMENT '切分参数版本，见 rag/structure.py CHUNK_SCHEMA_VER',
+  `tenant_id`        varchar(32)  NOT NULL DEFAULT 'default' COMMENT '租户：数据隔离维度',
+  `owner_id`         varchar(64)  DEFAULT NULL COMMENT '上传者；visibility=private 时只有他能看',
+  `visibility`       varchar(16)  NOT NULL DEFAULT 'tenant' COMMENT 'tenant / private / public',
+  `status`           varchar(16)  NOT NULL DEFAULT 'draft' COMMENT 'draft 待审核 / published 已发布 / archived 下架',
+  `published_at`     datetime     DEFAULT NULL COMMENT '审核通过时间',
+  `published_by`     varchar(64)  DEFAULT NULL COMMENT '审核人 user_id',
   PRIMARY KEY (`doc_id`),
-  KEY `idx_uploaded` (`uploaded_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文档元数据：重建一致性校验 + 切分参数版本管理';
+  KEY `idx_uploaded` (`uploaded_at`),
+  KEY `idx_acl` (`tenant_id`, `status`, `visibility`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文档元数据：重建一致性校验 + 切分参数版本 + 访问控制与审核状态';
 
 -- ════════════════════════════════════════════════════════════════════
 -- 认证与授权
