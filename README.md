@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | 检索层（165 条正样本标注集） | 精排后 **R@1 84.8% / R@20 98.2% / MRR 0.901** |
-| 测试 | **572 个用例全绿**，零外部服务（不连 Redis / MySQL / 任何 LLM）；另有 12 个 `integration` 用例需真 MySQL，默认不跑 |
+| 测试 | **671 个用例全绿**，零外部服务（不连 Redis / MySQL / 任何 LLM）；另有 12 个 `integration` 用例需真 MySQL，默认不跑 |
 | 入库 | 167 份文档 / 1761 个子块 / 98.4 秒，含 2 项安全探针 |
 | 技术栈 | FastAPI · LangGraph · Chroma · BM25(jieba) · MySQL · Redis · DashScope · MCP |
 
@@ -27,7 +27,7 @@
 | Tesseract OCR | 可选 | 只影响扫描件 PDF / 文档内嵌图的文字识别 |
 
 > **只想跑测试？** 不需要任何 key、不需要 MySQL / Redis、不需要模型 —— 克隆完直接
-> `pytest` 就是 **572 个用例全绿**（`tests/conftest.py` 会注入占位 key，所有 LLM 调用都走桩，
+> `pytest` 就是 **671 个用例全绿**（`tests/conftest.py` 会注入占位 key，所有 LLM 调用都走桩，
 > 并且**强制拦截一切非回环出网连接**：真实出网 = 测试失败）。
 > 机器上缺 tesseract 或 CJK 字体时，会跳过 3 个扫描件 OCR 用例（是 skip，不是 fail）。
 > 另有 12 个 `integration` 用例（真 MySQL 的认证链路）默认不跑：`pytest -m integration -q`。
@@ -174,6 +174,23 @@ venv\Scripts\python.exe main.py
 > 首次调用检索会加载模型，**冷启动几十秒是正常的**（GPU 加载 2.4GB 精排模型）；
 > 之后复用一个进程内单例，不再重复加载。
 
+### 内容审核、限流与运维
+
+| 能力 | 说明 |
+|---|---|
+| **内容审核** | `input`/`output`/`document` 三个挂载点；默认离线规则（不出网）。命中黑名单或文档里的**提示注入**特征 → 拒答 / 拒绝入库（422） |
+| **PII 脱敏** | 日志与审计里的手机号/身份证/银行卡/邮箱自动打码。**只脱敏、不拦截** —— 用户给手机号查订单是正常业务 |
+| **入口限流** | 按**账号**的令牌桶（不按 IP：会被 NAT/代理池绕过，还会误伤整个出口）；429 带 `Retry-After` |
+| **探针与指标** | `/health`、`/ready`、`/metrics`（Prometheus 文本）；每条日志带 `request_id` |
+| **容器化** | `Dockerfile` + `docker-compose.yml`（api + mysql + redis） |
+
+> **会话记忆默认是进程内的**：`AGENT_CHECKPOINT_BACKEND=memory` 意味着重启丢记忆、
+> 多副本各存一份（症状是"客服怎么又忘了"）。生产请改成 `sqlite`/`postgres`
+> 并安装 `langgraph-checkpoint-*`；启动时会打 WARNING 提醒你。
+
+> **多副本时注意限流口径**：进程内限流是每副本一份，额度会被放大成 N 倍
+> （BM25 缓存已经是磁盘共享的）。要么横向扩副本而不是调大 `--workers`，要么把限流指向 Redis。
+
 ### 常见问题
 
 | 现象 | 原因 / 处理 |
@@ -299,9 +316,11 @@ flowchart LR
 | `context_budget.py` | token 估算、预算打包、溢出识别 |
 | `db/` · `redis_client.py` | MySQL 文档/父子块/账号存储 · Redis 会话历史与转人工计数窗口 |
 | `auth/` | 认证与授权：bcrypt 密码、JWT 访问令牌、刷新令牌轮换、即时撤销、RBAC、审计、首个管理员引导 |
+| `rag/acl.py` · `moderation.py` | 文档级 ACL（两条检索通道都过滤）· 内容审核与 PII 脱敏 |
+| `metrics.py` · `observability.py` · `rate_limit.py` | 指标注册表 · request_id/结构化日志 · 入口限流 |
 | `mcp_client.py` | 外部 MCP 服务接入，工具统一命名空间 `mcp__<server>__<tool>` |
 | `eval/` | 语料生成器（固定 seed）、批量入库、检索召回评测脚本 |
-| `tests/` | 572 个用例，全部零外部服务（出网被强制拦截） |
+| `tests/` | 671 个用例，全部零外部服务（出网被强制拦截） |
 
 
 
@@ -326,7 +345,7 @@ my-agent-api/
 ├── tools_agent/            # 知识库工具 + 工具调用模型
 ├── db/                     # MySQL 存储层 + schema.sql
 ├── eval/                   # 语料生成 + 批量入库 + 召回评测
-└── tests/                  # 572 个用例
+└── tests/                  # 671 个用例
 ```
 
 > 下面这些是**运行产物或大文件**，刻意不入库，克隆后按「快速开始」第 3~4 步补上：
