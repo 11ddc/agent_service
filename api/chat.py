@@ -25,6 +25,7 @@ from metrics import chat_outcomes, handoff_events
 from moderation import STAGE_INPUT, STAGE_OUTPUT
 from query_rewrite import aappend_history
 from rag import acl as rag_acl
+from rate_limit import rate_limit
 from redis_client import redis_client
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,11 @@ def _invoke_graph(payload: dict, acl: rag_acl.Acl):
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest, principal: Principal = Depends(require_user)):
+async def chat(
+    request: ChatRequest,
+    principal: Principal = Depends(require_user),
+    _rate: None = Depends(rate_limit("chat")),
+):
     """同步聊天 — 编排图执行：拆分→意图路由→(短路/RAG/Agent)→汇总
 
     ⚠️ 这里原本是 `print("✅ 请求已进入接口！")`，写在 docstring **之前**：
@@ -275,7 +280,9 @@ def _run_graph_with_emitter(emitter, payload: dict, acl: rag_acl.Acl | None = No
 
 @router.post("/chat/stream")
 async def chat_stream(
-    request: ChatRequest, principal: Principal = Depends(require_user)
+    request: ChatRequest,
+    principal: Principal = Depends(require_user),
+    _rate: None = Depends(rate_limit("chat_stream")),
 ):
     """流式聊天 — 与 /chat 走**同一条编排图**，RAG 路径真 token 流式。
 

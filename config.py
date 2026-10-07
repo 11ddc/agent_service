@@ -228,3 +228,16 @@ MODERATION_FAIL_OPEN = _env_bool("MODERATION_FAIL_OPEN", True)
 MODERATION_MAX_CHARS = _env_int("MODERATION_MAX_CHARS", 20000)
 # 日志里的手机号/身份证/银行卡/邮箱是否打码
 MODERATION_MASK_LOGS = _env_bool("MODERATION_MASK_LOGS", True)
+
+# ════════════════════════════════════════════════════════════
+# 会话记忆（LangGraph checkpointer）与 BM25 索引的外置
+#
+# 默认 memory = 进程内：**重启即丢、多副本各存一份**。这不是"已外置"，
+# 只是一个零依赖的默认值；企业部署请显式改成 sqlite / postgres
+# （需要额外安装 langgraph-checkpoint-* 包，见 agent/checkpoint.py）。
+# ════════════════════════════════════════════════════════════
+AGENT_CHECKPOINT_BACKEND = (os.getenv("AGENT_CHECKPOINT_BACKEND") or "memory").strip().lower()
+AGENT_CHECKPOINT_SQLITE_PATH = Path(
+    os.getenv("AGENT_CHECKPOINT_SQLITE_PATH") or (ROOT / "data" / "checkpoints.sqlite")
+)
+AGENT_CHECKPOINT_POSTGRES_URL = os.getenv("AGENT_CHECKPOINT_POSTGRES_URL") or ""

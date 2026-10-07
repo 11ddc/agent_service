@@ -24,6 +24,9 @@ openai>=2.0
 
 # ── Web 服务 ───────────────────────────────────────────────
 fastapi>=0.115
+# pydantic：接口的请求/响应模型直接用它（FastAPI 也会传递依赖它，但我们的代码
+# 是**直接** import 的，按"只声明直接依赖"的规矩就该写出来）
+pydantic>=2.7
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 sse-starlette>=2.0

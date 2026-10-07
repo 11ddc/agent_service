@@ -1,0 +1,106 @@
+# 智能客服 API —— 容器编排（api + mysql + redis）
+#
+# ⚠️ 本机没有构建验证过（构建要联网拉基础镜像与依赖）。这份编排是按
+#    「首次真机构建时最容易踩的几处」写的，都在下面标注了原因。
+#
+# 它解决的核心问题是**配置口径**：`.env` 里的连接串写的是 127.0.0.1（本机开发用），
+# 容器里必须换成服务名 —— 所以 api 服务用 `environment` 显式覆盖 env_file 的同名项。
+#
+# 启动：
+#     copy .env.example .env      # 填好真实 key、MYSQL_PASSWORD 等
+#     docker compose up -d --build
+#     docker compose exec api python -m db.init_schema      # 建表 + 结构自检
+#     docker compose exec api python -m rag.acl_backfill    # 存量文档回填 ACL（幂等）
+#     docker compose exec api python -m auth.bootstrap --username admin
+#
+# 探针：/health 是存活、/ready 是就绪；db 容器用 mysqladmin ping，redis 用 redis-cli ping。
+
+services:
+  mysql:
+    image: mysql:8.0
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # 文档正文里有中文与 emoji，utf8mb4 是必须的（utf8 三字节存不下）
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 里设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag}
+      MYSQL_USER: ${MYSQL_USER:-app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 里设置 MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      # 只绑到宿主机回环：数据库不该对整个网络开放
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      # $$ 是转义：让容器内的 shell 去展开，而不是 compose 在宿主机上展开
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      # 会话历史 + 转人工计数 + 令牌撤销集合：都允许在内存压力下被淘汰，
+      # 但不能让 Redis 因为 OOM 直接拒绝写入（那会让主链路报错）
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # 覆盖 .env 里的本机地址：容器网络里要用服务名
+      MYSQL_URL: mysql+pymysql://${MYSQL_USER:-app}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-rag}?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      # 默认配置是 cuda；纯 CPU 容器里显式设成 cpu，省掉一次必然失败的 CUDA 初始化
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
+      RERANK_DEVICE: ${RERANK_DEVICE:-cpu}
+      # 多副本部署时把限流指向 Redis（进程内限流是每副本一份，额度会被放大）
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./knowledge_base:/app/knowledge_base
+      - ./chroma_db:/app/chroma_db
+      # 模型 2.6GB：挂载而不打进镜像（只读，容器不该改模型文件）
+      - ./embbding_models:/app/embbding_models:ro
+      - ./Reank_models:/app/Reank_models:ro
+      # BM25 索引缓存与 sqlite checkpoint：都是「外置」的落盘位置，
+      # 用命名卷让它们跨容器重建保留下来
+      - bm25_cache:/app/bm25_cache
+      - app_data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # 用 /ready（会真的探依赖）而不是 /health：只有依赖可用时才该接流量
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
+  bm25_cache:
+  app_data:

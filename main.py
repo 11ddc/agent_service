@@ -116,6 +116,13 @@ def preflight() -> None:
 
 preflight()
 
+# 会话记忆是否真的"外置"，启动时明确说清楚：
+# 默认 memory 是进程内实现 —— 重启即丢、多副本各存一份，而症状是
+# "客服怎么又忘了"，非常难归因。宁可每次启动都提醒一次。
+from agent.checkpoint import warn_if_not_externalized  # noqa: E402
+
+warn_if_not_externalized()
+
 import uvicorn  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 

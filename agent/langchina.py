@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
 
+from agent.checkpoint import create_checkpointer
 from tools_agent.kb_tools import KB_TOOLS
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env(键名不会被 \ufeff 污染)
@@ -77,9 +77,13 @@ AGENT_TOOLS = [*KB_TOOLS, get_knowledge_base_status]
 
 
 # ── 创建 Agent（全局单例）────────────────────────────────
+# checkpointer 由 agent/checkpoint.py 按配置选择：
+#   memory（默认，进程内：**重启即丢、多副本各存一份**）
+#   sqlite / postgres（需要额外依赖，见该模块说明）
+# ⚠️ 不要把它当成"已经外置"：默认值只是零依赖，企业部署要显式改配置。
 agent = create_agent(
     model=model,
     tools=AGENT_TOOLS,
-    checkpointer=InMemorySaver(),
+    checkpointer=create_checkpointer(),
     context_schema=Context,
 )

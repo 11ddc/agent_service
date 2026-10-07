@@ -1,0 +1,49 @@
+# 构建上下文排除项。
+#
+# 为什么重要：默认上下文是仓库根目录，而这里有 venv（几百 MB）、
+# 2.6GB 模型、Chroma 向量库、知识库文档、.env（**含真实密钥**）。
+# 不排除的话：镜像里会带上密钥与本地数据，构建也慢得多。
+#
+# ⚠️ 但要注意：这些目录在 compose 里是通过**卷挂载**进容器的
+#    （models / chroma_db / knowledge_base），排除它们不影响运行。
+
+.git
+.gitignore
+.dsh
+.dsh-test-tools
+
+# 密钥与本地配置：绝不进镜像
+.env
+.env.*
+!.env.example
+
+# 依赖与缓存
+venv
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+uv.lock
+
+# 运行时数据（走卷挂载）
+chroma_db
+bm25_cache
+data
+logs
+knowledge_base
+docx_images
+images
+resume-output
+
+# 模型权重（2.6GB，走卷挂载）
+embbding_models
+Reank_models
+
+# 测试与开发材料不需要进生产镜像
+tests
+eval
+*.md
+!README.md

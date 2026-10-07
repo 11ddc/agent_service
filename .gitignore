@@ -56,3 +56,7 @@ eval/run-*.json
 # 它们不属于项目代码，`git add .` 时很容易被顺手推上 GitHub。
 # 如果你确实想把这些脚本一起入库，删掉这一条即可。
 _diag_*.py
+# BM25 索引的磁盘缓存（可由 python -m rag 重建，不该进版本库）
+bm25_cache/
+# 运行时数据：SQLite checkpoint（会话记忆外置时落在这里）
+data/

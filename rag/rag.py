@@ -4,7 +4,9 @@ RAG 检索模块 —— 只负责文档加载、向量化、检索。
 """
 
 import asyncio
+import gzip
 import io
+import json
 import logging
 import os
 import re
@@ -85,6 +87,14 @@ _retriever = None
 _bm25 = None  # BM25Okapi 索引
 _bm25_corpus: list[str] = []  # 分词后的语料（与 _chunk_docs 对齐）
 _chunk_docs: list[Document] = []  # 全量 chunk（含 metadata，用于映射回来源）
+
+# BM25 索引的磁盘缓存（把"全量拉取 + jieba 分词 + 建 Okapi"从每次冷启动里省掉）。
+# 用 JSON+gzip，不用 pickle：pickle 反序列化会执行代码，一个可写的缓存文件
+# 就等于一个后门。
+BM25_CACHE_DIR = Path(os.getenv("BM25_CACHE_DIR") or (config.ROOT / "bm25_cache"))
+BM25_CACHE_VERSION = "v1"
+# 元数据变化（发布/下架/改可见性）后必须绕过磁盘缓存，见 invalidate_index_cache()
+_bm25_skip_cache = False
 
 # 文件内容加载参数
 _is_initialized: bool = False
@@ -1090,52 +1100,144 @@ def _ensure_ready() -> None:
             _is_initialized = False
 
 
+def _bm25_cache_path(count: int) -> "Path":
+    """缓存文件名带上「块数 + 版本」：内容变了块数通常也变，文件名就不同了。"""
+    return BM25_CACHE_DIR / f"{CHROMA_COLLECTION}-{BM25_CACHE_VERSION}-{count}.json.gz"
+
+
+def _load_bm25_cache(count: int):
+    """从磁盘缓存恢复 BM25。任何异常都当作"没有缓存"处理（检索必须能降级）。"""
+    path = _bm25_cache_path(count)
+    if not path.exists():
+        return None
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if data.get("version") != BM25_CACHE_VERSION or data.get("count") != count:
+            return None
+        docs = [
+            Document(page_content=t, metadata=m or {})
+            for t, m in zip(data["texts"], data["metadatas"])
+        ]
+        tokens = data["tokens"]
+        if len(docs) != count or len(tokens) != count:
+            return None
+        logger.info("BM25 索引从磁盘缓存恢复：%d 块（省掉一次全量拉取 + 分词）", count)
+        return BM25Okapi(tokens), tokens, docs
+    except Exception as e:  # noqa: BLE001 - 缓存坏了就当没有
+        logger.warning("BM25 缓存不可用，改为重建: %r", e)
+        return None
+
+
+def _save_bm25_cache(count: int, tokens, docs) -> None:
+    """原子写缓存：先写临时文件再 os.replace。
+
+    用 **JSON+gzip 而不是 pickle**：pickle 反序列化会执行代码，一个能被写入的
+    缓存文件就等于一个后门。JSON 只解析数据，代价是体积（用 gzip 压回来）。
+    """
+    try:
+        BM25_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _bm25_cache_path(count)
+        tmp = path.with_name(path.name + ".tmp")
+        with gzip.open(tmp, "wt", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "version": BM25_CACHE_VERSION,
+                    "collection": CHROMA_COLLECTION,
+                    "count": count,
+                    "tokens": tokens,
+                    "texts": [d.page_content for d in docs],
+                    "metadatas": [d.metadata or {} for d in docs],
+                },
+                fh,
+                ensure_ascii=False,
+            )
+        os.replace(tmp, path)
+        logger.info("BM25 索引已落盘缓存：%s", path.name)
+    except Exception as e:  # noqa: BLE001 - 缓存写失败不影响检索
+        logger.warning("BM25 缓存写入失败（不影响检索）: %r", e)
+
+
 def _build_bm25_index() -> None:
-    """从 Chroma 全量拉取 chunk，构建 BM25 内存索引（幂等，线程安全）"""
-    global _bm25, _bm25_corpus, _chunk_docs
+    """建立 BM25 内存索引。
+
+    ## 优先用磁盘缓存
+
+    全量拉取 1800+ 块再从 Chroma 取文本、jieba 分词、建 Okapi —— 每次进程启动
+    都要重做一遍。落到磁盘后冷启动直接加载（JSON+gzip），多副本部署时每份
+    副本也能省掉这一遍。**下一步**才是把它挪成共享服务（一次构建、多副本复用）。
+
+    ## ⚠️ 元数据变化的场景必须**绕过**缓存
+
+    `Acl.allows()` 判权限用的是这里的 `metadata`。发布/下架/改可见性**不改块数**，
+    如果那时还从缓存恢复，就会拿着**旧的 status** 判权限 ——
+    表现为"已经下架的文档仍然被检索到"，而且完全不报错。
+    所以 `invalidate_index_cache()` 会置 `_bm25_skip_cache`，强制重读 Chroma。
+    """
+    global _bm25, _bm25_corpus, _chunk_docs, _bm25_skip_cache
     if _vectorstore is None:
         return
     with _bm25_lock:
         if _vectorstore is None:
             return
         try:
+            count = _vectorstore._collection.count()
+            use_cache = not _bm25_skip_cache
+
+            if use_cache:
+                cached = _load_bm25_cache(count)
+                if cached is not None:
+                    _bm25, _bm25_corpus, _chunk_docs = cached
+                    return
+
             # 拿到向量数据库中的文本和元数据（页码，来源）等
             data = _vectorstore._collection.get(include=["documents", "metadatas"])
             texts = data.get("documents") or []
             metas = data.get("metadatas") or []
-            # print(f"texts:",texts)
-            # print(f"metas:",metas)
             if not texts:
                 _bm25, _bm25_corpus, _chunk_docs = None, [], []
                 return
             _chunk_docs = [
-                # Document将“文本”和“元数据”打包成一个对象。
+                # Document将"文本"和"元数据"打包成一个对象。
                 Document(page_content=t, metadata=m or {})
                 for t, m in zip(texts, metas)
             ]
-            # print(f"chunk_docs:::::",_chunk_docs)
             # jieba.lcut 将中文分词然后变成列表
-            # 这里建立索引实际上是对之前存入到向量库中的切片chunk进行的
             _bm25_corpus = [jieba.lcut(_clean_query(t)) for t in texts]
-
-            # print(f"_bm25_corpus：：",_bm25_corpus)
             _bm25 = BM25Okapi(_bm25_corpus)
-            logger.debug("bm25222 %s", _bm25)
-            logger.info(f"BM25 索引构建完成，共 {len(texts)} 个 chunk")
+            _bm25_skip_cache = False
+            logger.info("BM25 索引构建完成，共 %d 个 chunk", len(texts))
+            _save_bm25_cache(len(texts), _bm25_corpus, _chunk_docs)
         except Exception as e:
             logger.warning(f"BM25 索引构建失败，降级为纯向量检索: {e}")
             _bm25, _bm25_corpus, _chunk_docs = None, [], []
 
 
 def invalidate_index_cache() -> None:
-    """让 BM25 索引在下次查询时重建。
+    """让 BM25 索引在下次查询时重建，并且**绕过磁盘缓存**。
 
-    ⚠️ 发布/下架/改可见性只改 metadata、**不改块数**，而 `_sparse_search` 的重建
-    条件是"块数变了" —— 不显式失效的话，缓存里还是旧的 status，
-    表现为"**已经下架的文档仍然被检索到**"，而且不报错。
+    ⚠️ 两件事必须一起做：发布/下架/改可见性只改 metadata、**不改块数**，而
+    `_sparse_search` 的重建条件是"块数变了" —— 不显式失效的话，缓存里还是旧的
+    status，表现为"**已经下架的文档仍然被检索到**"，而且不报错。
+    同时还要跳过磁盘缓存：磁盘缓存里存的也是旧 metadata，恢复它等于白失效一次。
     """
-    global _bm25
+    global _bm25, _bm25_skip_cache
     _bm25 = None
+    _bm25_skip_cache = True
+
+
+def clear_bm25_cache() -> int:
+    """删掉本集合的全部磁盘缓存，返回删除数量（换切分参数/排查脏数据时用）。"""
+    if not BM25_CACHE_DIR.exists():
+        return 0
+    removed = 0
+    for path in BM25_CACHE_DIR.glob(f"{CHROMA_COLLECTION}-*.json.gz"):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as e:
+            logger.warning("删除 BM25 缓存失败 %s: %r", path, e)
+    return removed
 
 
 def _sparse_search(query: str, k: int) -> list[Document]:
