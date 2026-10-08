@@ -68,7 +68,10 @@ EMBEDDING_QUERY_PREFIX = os.getenv(
 )
 
 # ════════════════════════════════════════════════════════════
-# Cross-Encoder 精排
+# Cross-Encoder 精排（**当前未启用**）
+# 现在线上走的是智谱 glm-4.5-air 打分，见 rag/glm_reranker.py；下面这两项只被
+# 已注释的本地实现（rag/local_reranker.py）使用，留着是为了随时能换回去。
+#
 # 以前模型路径**硬编码**在 rag/local_reranker.py 里写死成作者的盘符
 # （"F:/my-agent-api/Reank_models/..."）—— 别人 clone 到别的目录必然加载失败，
 # 而 reordering() 里那层 except 会把它降级成 RRF 顺序，**不报错、只是精排悄悄失效**

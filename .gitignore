@@ -5,7 +5,8 @@ env/
 chroma_db/
 images
 knowledge_base
-Reank_models
+
+/Reank_models
 .dsh
 .dsh/skills
 .dsh-test-tools

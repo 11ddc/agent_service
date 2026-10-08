@@ -41,8 +41,11 @@ from db import (
     parent_store,
 )
 from rag import structure as st
+from rag.glm_reranker import GLMReranker
 from rag.local_embedding import get_embeddings
-from rag.local_reranker import LocalReranker
+
+# ── 本地 Cross-Encoder 重排序已停用（代码保留，见 rag/local_reranker.py）──
+# from rag.local_reranker import LocalReranker
 from rag.structure import (
     CHUNK_SCHEMA_VER,
     Section,
@@ -71,7 +74,10 @@ load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env
 
 logger = logging.getLogger(__name__)
 
-reranker = LocalReranker()
+# 重排序器：走智谱 glm-4.5-air（key 用 ZHI_PU_API_KEY），见 rag/glm_reranker.py
+# 原本地 Cross-Encoder 那一行已注释掉（要回退就把它放开、并注释掉下面这行）：
+# reranker = LocalReranker()
+reranker = GLMReranker()
 
 
 # ── 知识库异常 ─────────────────────────────────────────────
