@@ -1,11 +1,10 @@
 venv/
 env/
-.env
 .venv
 chroma_db/
 images
 knowledge_base
-
+.env
 /Reank_models
 .dsh
 .dsh/skills

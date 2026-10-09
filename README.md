@@ -182,7 +182,7 @@ venv\Scripts\python.exe main.py
 | **PII 脱敏** | 日志与审计里的手机号/身份证/银行卡/邮箱自动打码。**只脱敏、不拦截** —— 用户给手机号查订单是正常业务 |
 | **入口限流** | 按**账号**的令牌桶（不按 IP：会被 NAT/代理池绕过，还会误伤整个出口）；429 带 `Retry-After` |
 | **探针与指标** | `/health`、`/ready`、`/metrics`（Prometheus 文本）；每条日志带 `request_id` |
-| **容器化** | `Dockerfile` + `docker-compose.yml`（api + mysql + redis） |
+| **容器化** | 一条 `docker compose up -d --build` 起全套：`api`（本仓库 `Dockerfile`）+ `web`（**前端项目自己的 Dockerfile**，路径由 `FRONTEND_DIR` 指）+ `mysql` / `redis` / `nginx`（官方镜像；入口配置 `deploy/nginx/default.conf`，负责 SSE 长连接、50MB 上传、X-Forwarded-For）。后端镜像里 **torch 装的是 CPU 版**（省约 7GB、构建快一个数量级）；apt/pip/torch 三个源可用 `.env` 里的 `APT_MIRROR` / `PIP_INDEX_URL` / `TORCH_INDEX_URL` 覆盖，**不用改 Dockerfile** |
 
 > **会话记忆默认是进程内的**：`AGENT_CHECKPOINT_BACKEND=memory` 意味着重启丢记忆、
 > 多副本各存一份（症状是"客服怎么又忘了"）。生产请改成 `sqlite`/`postgres`
