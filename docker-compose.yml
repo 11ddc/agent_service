@@ -22,6 +22,14 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       # 文档正文里有中文与 emoji，utf8mb4 是必须的（utf8 三字节存不下）
+      #
+      # ── 小内存机器（4GB 云服务器）：把 MySQL 的内存占用钉死 ──────────
+      # MySQL 8 默认按机器总内存自动放大 InnoDB 缓冲池，并开着 performance_schema，
+      # 在 4GB 上会和 api 容器（torch 推理）抢内存，现象是构建/首次上传时进程
+      # 被 OOM Killer 干掉（日志里只有一个 Killed）。知识库这个量级 256M 足够。
+      - --innodb-buffer-pool-size=256M
+      - --performance-schema=OFF
+      - --max-connections=50
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 里设置 MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-rag}
@@ -76,9 +84,14 @@ services:
     volumes:
       - ./knowledge_base:/app/knowledge_base
       - ./chroma_db:/app/chroma_db
-      # 模型 2.6GB：挂载而不打进镜像（只读，容器不该改模型文件）
+      # 本地 embedding 模型（183MB，只读）。没传的话会走下面的 HF 缓存自动下载。
       - ./embbding_models:/app/embbding_models:ro
-      - ./Reank_models:/app/Reank_models:ro
+      # 精排已改用智谱 glm-4.5-air（见 rag/glm_reranker.py），本地精排模型不再需要，
+      # 那 2.19GB 也就**不用**传上服务器了（4GB 机器上正好省下来）：
+      # - ./Reank_models:/app/Reank_models:ro
+      # HF 缓存：本地没放模型时 SentenceTransformer 会下载到这里。
+      # 不挂卷的话它在镜像层里 —— 每次 --build / 重建容器都要重新下一遍（慢且费流量）。
+      - hf_home:/app/models/hf
       # BM25 索引缓存与 sqlite checkpoint：都是「外置」的落盘位置，
       # 用命名卷让它们跨容器重建保留下来
       - bm25_cache:/app/bm25_cache
@@ -104,3 +117,4 @@ volumes:
   redis_data:
   bm25_cache:
   app_data:
+  hf_home:

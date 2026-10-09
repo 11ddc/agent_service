@@ -50,8 +50,20 @@ RAG_PROMPT = """你是一个严谨的知识助手。请严格基于以下【参�
 """
 
 # ── 新增：预算内生成用的模型参数与分段生成提示词 ──
-# （RAG_PROMPT / _format_docs / generate_answer 一个字都没动）
-GENERATE_MODEL = "qwen3-32b"  # 与上面 generate_answer 里写死的模型保持一致
+# （RAG_PROMPT / _format_docs / generate_answer 的逻辑一个字都没动）
+#
+# 生成模型已从 DashScope 的 qwen3-32b 换成 **DeepSeek**：
+# 换 provider 只动下面两项 + 客户端的 key，其余调用处只认 GENERATE_MODEL。
+# 都留了环境变量口子（GENERATE_MODEL / GENERATE_BASE_URL），换回去不用改代码。
+GENERATE_MODEL = os.getenv("GENERATE_MODEL") or "deepseek-chat"
+GENERATE_BASE_URL = os.getenv("GENERATE_BASE_URL") or "https://api.deepseek.com/v1"
+
+# enable_thinking 是 **DashScope/Qwen 专有**字段（它默认开思考链，答案里会混进
+# 思考过程，所以原来显式关掉）。DeepSeek 不认这个字段 —— 只在地址是百炼时带上，
+# 这样把 GENERATE_BASE_URL 改回 dashscope 也不会坏。
+_GENERATE_EXTRA_BODY = (
+    {"enable_thinking": False} if "dashscope" in GENERATE_BASE_URL else {}
+)
 
 # map 阶段：每批资料各提取一次局部结果（输出短、可合并）
 MAP_PROMPT = """你是严谨的知识助手。下面是【参考资料】的其中一部分，不是全部。
@@ -107,10 +119,11 @@ GENERATE_MAX_RETRIES = int(os.getenv("GENERATE_MAX_RETRIES", "1"))
 
 class RAGGenerator:
     def __init__(self):
-        # 创建生成模型客户端
+        # 创建生成模型客户端：DeepSeek。key 直接用 .env 里已有的 DEEPSEEK_API_KEY
+        # （和主模型 query 改写 / 意图仲裁用的是同一个 key）
         self.generate_client = OpenAI(
-            api_key=os.getenv("GENERATE_API_KEY"),
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
+            base_url=GENERATE_BASE_URL,
             timeout=GENERATE_TIMEOUT,
             max_retries=GENERATE_MAX_RETRIES,
         )
@@ -127,7 +140,7 @@ class RAGGenerator:
         context_text = _format_docs(reranked_docs)
         try:
             res = self.generate_client.chat.completions.create(
-                model="qwen3-32b",
+                model=GENERATE_MODEL,
                 messages=[
                     {"role": "system", "content": "你是严谨的中文知识助手。"},
                     {
@@ -137,7 +150,7 @@ class RAGGenerator:
                         ),
                     },
                 ],
-                extra_body={"enable_thinking": False},
+                extra_body=_GENERATE_EXTRA_BODY,
                 stream=False,
                 # 温度越高llm越自由发挥
                 temperature=0.3,
@@ -180,7 +193,7 @@ class RAGGenerator:
             res = self.generate_client.chat.completions.create(
                 model=GENERATE_MODEL,
                 messages=messages,
-                extra_body={"enable_thinking": False},
+                extra_body=_GENERATE_EXTRA_BODY,
                 stream=False,
                 temperature=0.3,
                 max_tokens=max_tokens,
@@ -193,7 +206,7 @@ class RAGGenerator:
         stream = self.generate_client.chat.completions.create(
             model=GENERATE_MODEL,
             messages=messages,
-            extra_body={"enable_thinking": False},
+            extra_body=_GENERATE_EXTRA_BODY,
             stream=True,
             temperature=0.3,
             max_tokens=max_tokens,
