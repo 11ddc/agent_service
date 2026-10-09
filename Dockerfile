@@ -59,7 +59,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 LABEL org.opencontainers.image.title="my-agent-api" \
       org.opencontainers.image.description="智能客服问答 API —— RAG 检索 + LangGraph Agent 编排" \
-      org.opencontainers.image.source="https://github.com/11ddc/agentstudy"
+      org.opencontainers.image.source="https://github.com/11ddc/agent_service"
 
 # 系统依赖：
 #   libgomp1                      —— torch / onnxruntime 的 OpenMP 运行时
