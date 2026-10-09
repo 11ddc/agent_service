@@ -1,10 +1,11 @@
 venv/
 env/
+.env
 .venv
 chroma_db/
 images
 knowledge_base
-.env
+
 /Reank_models
 .dsh
 .dsh/skills
@@ -34,7 +35,6 @@ resume-output
 embbding_models
 *.tmp
 .DS_Store
-.env
 
 # RAG 评测：**脚本与标注集要提交**，只有跑出来的产物不入库。
 # ⚠️ 教训：这段之前是一条裸的 `eval`，它把整个目录先排除了，于是下面这些精确
