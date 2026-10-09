@@ -7,7 +7,8 @@
 # 做三件事，**都不会覆盖你已经填好的值**：
 #   1) .env 不存在就从 .env.example 复制一份
 #   2) AUTH_JWT_SECRET 还是占位符/为空 → 生成一把 64 字符随机密钥写进去
-#      （这是唯一一个"不填就启动失败"的变量，见 auth/security.py:113）
+#      （登录令牌的签名密钥。缺失或太短时**不是**启动失败，而是签/验令牌时抛
+#        AuthConfigError —— 服务能起来，但登录与所有鉴权接口全废）
 #   3) 补齐 docker-compose.yml 强制要求的 MYSQL_ROOT_PASSWORD / MYSQL_PASSWORD
 #      / MYSQL_DATABASE / MYSQL_USER / FRONTEND_DIR
 #
@@ -51,14 +52,27 @@ ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / ".env.example"
 ENV_FILE = ROOT / ".env"
 
-# 只要求平台密钥已填的清单（不填不会启动失败，但主链路会降级）
+# 平台密钥体检表：(环境变量, 缺失是否致命, 用途)
+#
+# "致命"不是猜的：这几个模块都在**模块级**构造 OpenAI 客户端
+#     agent/langchina.py:25            → DEEPSEEK_API_KEY
+#     intent/problemdecomposition.py:31 → ZHI_PU_API_KEY
+#     tools_agent/tool_llm.py:31       → ZHI_PU_API_KEY
+# 而 openai SDK 在 api_key 为 None 时**构造即抛** OpenAIError，所以缺了不是
+# "功能降级"，是 import 失败 → 容器启动即崩。
 PLATFORM_KEYS = (
-    "DEEPSEEK_API_KEY",
-    "GENERATE_API_KEY",
-    "QIAN_WEN_QUERYSTION_API_KEY",
-    "QIANWEN_API_KEY",
-    "ZHI_PU_API_KEY",
+    ("DEEPSEEK_API_KEY", True, "改写 / 意图仲裁 / 兜底 Agent / RAG 答案生成"),
+    ("ZHI_PU_API_KEY", True, "问题拆分 + 视觉 OCR + 工具调用（同一把 key）"),
+    ("QIANWEN_API_KEY", False, "云端向量（EMBEDDING_PROVIDER=dashscope 才用）；默认走本地"),
 )
+
+# 当前代码**不读**的历史变量：填了不生效，别为此去申请 key。
+#   BASE_URL                    —— 全仓库没有任何 os.getenv("BASE_URL")
+#   GENERATE_API_KEY            —— 答案生成改用 DeepSeek 后废弃（rag/generatellm.py
+#                                  用的是 DEEPSEEK_API_KEY，模型默认 deepseek-chat）
+#   QIAN_WEN_QUERYSTION_API_KEY —— 问题拆分改用智谱后废弃（intent/problemdecomposition.py
+#                                  现在读 ZHI_PU_API_KEY）
+DEAD_KEYS = ("GENERATE_API_KEY", "BASE_URL", "QIAN_WEN_QUERYSTION_API_KEY")
 
 
 def read_env() -> str:
@@ -119,7 +133,7 @@ def main() -> int:
 
     text = read_env()
 
-    # ── AUTH_JWT_SECRET：唯一一个"不填就起不来"的变量 ──────────────────
+    # ── AUTH_JWT_SECRET：登录/鉴权的签名密钥 ──────────────────
     current = get_val(text, "AUTH_JWT_SECRET")
     too_short = bool(current) and len(current.encode("utf-8")) < MIN_SECRET_BYTES
     if not current or current == PLACEHOLDER or too_short:
@@ -162,20 +176,42 @@ def main() -> int:
 
     write_env(text)
 
-    # ── 体检：还有哪些占位符没填 ──────────────────────────────────────
-    print("\n── 仍需你手动填写的项（脚本无法代生成，要去平台申请）──")
-    pending = [
-        key
-        for key in PLATFORM_KEYS
-        if not (v := get_val(text, key)) or "xxxx" in v.lower()
-    ]
-    if not pending:
-        print("  ✓ 平台密钥看起来都已填写")
-    else:
-        for key in pending:
-            print(f"  ✗ {key}  （还是占位符或为空）")
-        print(f"\n  → 共 {len(pending)} 项待填。不填不会导致启动失败（主链路会降级），")
-        print(f"     但答案质量会明显下降。编辑：nano {ENV_FILE}")
+    # ── 体检：还差哪些平台密钥 ────────────────────────────────────────
+    print("\n── 平台密钥体检 ──")
+    fatal_missing: list[str] = []
+    optional_missing: list[str] = []
+    for key, fatal, why in PLATFORM_KEYS:
+        value = get_val(text, key)
+        if value and "xxxx" not in value.lower():
+            print(f"  ✓ {key}")
+            continue
+        tag = "必填" if fatal else "可选"
+        print(f"  ✗ {key}  [{tag}] {why}")
+        (fatal_missing if fatal else optional_missing).append(key)
+
+    if fatal_missing:
+        print(
+            f"\n  ⚠️ 有 {len(fatal_missing)} 个**必填** key 是空的。承载它们的模块在"
+            "\n     import 期就构造 OpenAI 客户端，而 api_key 为 None 会直接抛异常 ——"
+            "\n     缺了不是降级，是 **api 容器启动即崩**。申请后务必补齐："
+        )
+        for key in fatal_missing:
+            print(f"       {key}")
+    elif not optional_missing:
+        print("\n  ✓ 平台密钥都齐了")
+
+    if optional_missing:
+        print(f"\n  · 未填的可选项（不影响启动）：{', '.join(optional_missing)}")
+
+    dead = [key for key in DEAD_KEYS if get_val(text, key) is not None]
+    if dead:
+        print(
+            f"\n  提示：{', '.join(dead)} 当前代码**不读**（见文件顶部 DEAD_KEYS 注释），"
+            "填了不生效，可以直接从 .env 删掉。"
+        )
+
+    if fatal_missing or optional_missing:
+        print(f"\n  编辑：nano {ENV_FILE}")
 
     print("\n── 下一步 ──")
     print("  1) compose 配置自检：     docker compose config --quiet && echo 配置 OK")

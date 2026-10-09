@@ -128,8 +128,10 @@ def embedding_stamp() -> str:
 # 认证与授权
 #
 # 企业里"谁在用、他能看什么"是红线，所以这块的姿态是**失败关闭**：
-#   · AUTH_ENABLED 默认开启；缺 AUTH_JWT_SECRET 时 main.py 的启动自检直接拒绝启动
-#     （而不是用一个内置默认密钥悄悄跑起来 —— 那等于谁都能伪造 token）；
+#   · AUTH_ENABLED 默认开启；缺 AUTH_JWT_SECRET 时**不会**启动失败，而是签/验令牌
+#     那一刻抛 AuthConfigError（见 auth/security.py:116）—— 服务看起来正常，但登录
+#     与所有鉴权接口全废。（main.py 里并没有启动自检，别指望它把缺的 key 列出来。）
+#     绝不使用内置默认密钥：那等于谁都能伪造 token；
 #   · 用户存储（MySQL）不可用时，受保护接口返回 **503**，绝不放行；
 #   · AUTH_ENABLED=false 只给本地演示用，启动时会打 WARNING。
 #

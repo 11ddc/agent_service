@@ -62,19 +62,27 @@ copy .env.example .env      # Windows
 cp .env.example .env        # Linux / macOS
 ```
 
-`.env` 已被 gitignore，**真实 key 不会入库**。整套只涉及 **2 个平台、4 个必需变量**：
+`.env` 已被 gitignore，**真实 key 不会入库**。有 **2 个平台 key 是启动必需**的：
 
 | 变量 | 去哪申请 | 用途 |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | [platform.deepseek.com](https://platform.deepseek.com/api_keys) | 主模型：query 改写 / 意图仲裁 / 兜底 Agent |
-| `GENERATE_API_KEY` | [百炼控制台](https://bailian.console.aliyun.com/) | RAG 答案生成（qwen3-32b） |
-| `QIAN_WEN_QUERYSTION_API_KEY` | 同上（**可填同一把 key**） | 多问题拆分（qwen3.5-flash） |
-| `ZHI_PU_API_KEY` | [open.bigmodel.cn](https://open.bigmodel.cn/) | 工具调用模型（glm-4.5-air） |
+| `DEEPSEEK_API_KEY` | [platform.deepseek.com](https://platform.deepseek.com/api_keys) | 主模型：query 改写 / 意图仲裁 / 兜底 Agent / **RAG 答案生成** |
+| `ZHI_PU_API_KEY` | [open.bigmodel.cn](https://open.bigmodel.cn/) | 工具调用（glm-4.5-air）、问题拆分（glm-4.5-air）、视觉 OCR（glm-4v-flash，免费） |
 | `MYSQL_URL` | 自己起 | 父块存储，格式见模板 |
 
-这 4 个 key 是**在 import 期**就被读走的（`agent/graph.py`、`agent/langchina.py`、
-`intent/problemdecomposition.py` 在模块级就构造客户端），所以**缺一个服务都起不来**。
-不用担心看堆栈：`main.py` 里加了启动前自检，缺哪个会直接列出来并告诉你去哪填。
+这两个 key 是**在 import 期**就被读走的（`agent/langchina.py:25`、
+`intent/problemdecomposition.py:31`、`tools_agent/tool_llm.py:31` 都在模块级构造
+OpenAI 客户端），而 `api_key=None` 会让 SDK **构造即抛** `OpenAIError` ——
+所以缺一个就**启动即崩**，而且只给一段原始堆栈：`main.py` 里并**没有**启动前自检，
+别指望它把缺哪个 key 友好地列出来。
+
+> `QIANWEN_API_KEY`（百炼）是**可选**的：只有把 `EMBEDDING_PROVIDER` 设成 `dashscope`
+> 用云端向量时才需要，默认走本地模型，不填也能跑。
+>
+> `GENERATE_API_KEY`、`BASE_URL`、`QIAN_WEN_QUERYSTION_API_KEY` 是**当前代码不读**的
+> 历史变量：答案生成已改用 `DEEPSEEK_API_KEY`（`rag/generatellm.py` 的 `GENERATE_MODEL`
+> 默认 `deepseek-chat`），问题拆分已从千问迁到智谱（`intent/problemdecomposition.py`
+> 现在读 `ZHI_PU_API_KEY`）。填了不生效，不用为此申请 key。
 
 > `QIANWEN_API_KEY`（云端向量 + 视觉 OCR）是**可选**的：默认走本地向量 + 本地 OCR，
 > 不填也能跑；只有要处理纯图片扫描页、或想换成云端 embedding 时才需要。
