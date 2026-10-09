@@ -61,9 +61,10 @@ def test_vision_extract_text_forwards_bytes_and_source(monkeypatch):
 
 
 def test_vision_extract_text_raises_when_key_missing(monkeypatch):
-    monkeypatch.delenv("QIANWEN_API_KEY", raising=False)
+    # 视觉模型已从千问迁到智谱 GLM-4V，key 换成 ZHI_PU_API_KEY
+    monkeypatch.delenv("ZHI_PU_API_KEY", raising=False)
 
-    with pytest.raises(VisionError, match="QIANWEN_API_KEY"):
+    with pytest.raises(VisionError, match="ZHI_PU_API_KEY"):
         vo.vision_extract_text(b"\x89PNG\r\n\x1a\nrest")
 
 

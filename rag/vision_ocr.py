@@ -1,4 +1,4 @@
-"""视觉模型 OCR 增强(混合方案)—— 基于千问 Qwen3-VL-Flash(DashScope OpenAI 兼容接口)。
+"""视觉模型 OCR 增强(混合方案)—— 基于智谱 GLM-4V(OpenAI 兼容接口)。
 
 设计:本地 pytesseract 快路径 + 视觉大模型慢路径,按开关分流:
   - VISION_OCR_MODE=auto(默认):本地 OCR 文本为空时才调视觉模型,控制成本;
@@ -6,8 +6,8 @@
   - VISION_OCR_MODE=off:关闭视觉增强,退化为纯 pytesseract(等于原行为)。
 
 可调环境变量:
-  - VISION_MODEL:模型名,默认 qwen3-vl-flash
-  - QIANWEN_API_KEY:密钥(与项目里 DashScopeEmbeddings 同源)
+  - VISION_MODEL:模型名,默认 glm-4v-flash
+  - ZHI_PU_API_KEY:密钥(与 tools_agent/tool_llm.py 用的是同一个智谱账号)
 
 设计要点:
   - import 本模块零开销(openai 客户端延迟到调用时创建、按次新建,避免缺 key 时
@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 load_dotenv(encoding="utf-8-sig")  # utf-8-sig:兼容带 BOM 的 .env(键名不会被 \ufeff 污染)
 
-DEFAULT_MODEL = "qwen3-vl-flash"
-_DASH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_MODEL = "glm-4v-flash"
+_ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
 
 # 文件头魔数 → mime(轻量嗅探;识别不了就按 image/png,视觉模型能容忍)
 _MIME_SNIFF = [
@@ -73,14 +73,14 @@ _SYSTEM_PROMPT = (
 
 def _request(image_bytes: bytes, prompt: str, mime: str, model: str) -> str:
     """真正调用视觉模型(openai 客户端按次创建,延迟导入)。"""
-    api_key = os.getenv("QIANWEN_API_KEY")
+    api_key = os.getenv("ZHI_PU_API_KEY")
     if not api_key:
-        raise VisionError("未配置 QIANWEN_API_KEY,视觉模型不可用")
+        raise VisionError("未配置 ZHI_PU_API_KEY,视觉模型不可用")
 
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key, base_url=_DASH_BASE_URL, timeout=60)
+        client = OpenAI(api_key=api_key, base_url=_ZHIPU_BASE_URL, timeout=60)
         resp = client.chat.completions.create(
             model=model,
             messages=[

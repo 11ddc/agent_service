@@ -455,7 +455,7 @@ def _ocr_docx_image(
     except Exception as e:
         logger.warning("OCR 识别图片 %s 失败: %s", img_path.name, e)
         text = ""  # 本地 OCR 失败不跳过：留给视觉模型补救
-    # 视觉模型增强（混合方案）:OCR 为空时补 Qwen3-VL,见 rag/vision_ocr.py
+    # 视觉模型增强（混合方案）:OCR 为空时补智谱 GLM-4V,见 rag/vision_ocr.py
     text = hybrid_image_text(blob, text, source=str(img_path))
     if text.strip():
         logger.info(f"OCR 识别图片 {img_path.name} 的文字: {text.strip()}")

@@ -28,13 +28,13 @@ SPLIT_TIMEOUT = float(os.getenv("SPLIT_TIMEOUT", "15"))
 SPLIT_MAX_RETRIES = int(os.getenv("SPLIT_MAX_RETRIES", "1"))
 
 client = OpenAI(
-    api_key=os.getenv("QIAN_WEN_QUERYSTION_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1",
+    api_key=os.getenv("ZHI_PU_API_KEY"),
+    base_url="https://open.bigmodel.cn/api/paas/v4/",
     timeout=SPLIT_TIMEOUT,
     max_retries=SPLIT_MAX_RETRIES,
 )
 
-_MODEL = "qwen3.5-flash"
+_MODEL = "glm-4.5-air"
 
 # ── 规则判断（divide）用的多问题信号 ──
 _CONJUNCTIONS_RE = re.compile(
@@ -85,16 +85,20 @@ def decompose(query: str) -> list[str]:
     text = ""
     try:
         logger.info("问题拆分模型调用")
-        response = client.responses.create(
+        # 智谱只有 Chat Completions，**没有** OpenAI 的 Responses 接口，所以这里
+        # 用的是 chat.completions.create（原先走 DashScope 应用协议时是 responses.create）。
+        # ⚠️ 同时必须去掉 enable_thinking —— 那是 DashScope/Qwen 专有字段，
+        #    智谱不认，传了会直接 400。
+        response = client.chat.completions.create(
             model=_MODEL,
-            input=[
+            messages=[
                 {"role": "system", "content": _DECOMPOSE_PROMPT},
                 {"role": "user", "content": query},
             ],
-            extra_body={"enable_thinking": False},  # 关闭思考模式，拆分要快
+            temperature=0.1,  # 拆分要稳定复现，别让它自由发挥
         )
         # 取出文本并去掉 ```json 包裹（LLM 偶尔会带）
-        text = response.output_text if response else ""
+        text = (response.choices[0].message.content or "") if response else ""
         # 替换字符 忽略大小写
         cleaned = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE
