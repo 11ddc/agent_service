@@ -13,6 +13,13 @@
 #     docker compose exec api python -m db.init_schema      # 建表 + 结构自检
 #     docker compose exec api python -m rag.acl_backfill    # 存量文档 ACL 回填（幂等）
 #     docker compose exec api python -m auth.bootstrap --username admin
+#     docker compose exec api python -m rag.publish_drafts  # 上传文档后必须审核发布
+#
+# ⚠️ 最后那条最容易漏，而漏了的症状是「明明上传了，检索却什么都搜不到、且没有任何报错」：
+#    ACL_REQUIRE_APPROVAL 默认为 true（企业默认：知识库内容会注入所有用户的提示词），
+#    所以 /api/upload 入库的每个块都带 status=draft，而检索只认 published
+#    （见 rag/acl.py 的 chroma_filter/allows）。每上传一批新文档都要再跑一次
+#    publish_drafts；排障用 docker compose exec api python -m rag.diagnose。
 #
 # 流量只有一层入口（api / web 都不对宿主机发布端口）：
 #     nginx :80/:443
@@ -184,6 +191,10 @@ services:
     image: nginx:1.27-alpine
     ports:
       - "80:80"
+      # Jenkins 入口（内部工具，见 deploy/nginx/default.conf 末尾那个 server 块）。
+      # ⚠️ 安全组请只放行你自己的 IP；或者删掉这行、改用 SSH 隧道：
+      #     ssh -L 8081:127.0.0.1:8081 root@<服务器IP>
+      - "8081:8081"
       # 上 HTTPS 时放开 443 与下面的证书挂载（配置模板见 deploy/nginx/default.conf 末尾）：
       # - "443:443"
     volumes:
