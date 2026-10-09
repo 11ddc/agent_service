@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import stat
 import sys
 from pathlib import Path
 
@@ -40,6 +41,11 @@ except Exception:
 # 模板里那个"看起来像密钥"的占位符。它 12 个汉字 = 36 字节，能通过应用
 # "≥32 字节"的校验，所以不能指望启动时报错来发现它 —— 必须主动识别并替换。
 PLACEHOLDER = "请替换成随机生成的长密钥"
+
+# 与 auth/security.py 的 MIN_SECRET_BYTES 保持一致。短于这个值的密钥不会被
+# "缺失检查"拦住（它有值），但服务一旦签/验令牌就抛 AuthConfigError ——
+# 属于"看起来配好了、一用就炸"，所以这里按同一标准主动重生成。
+MIN_SECRET_BYTES = 32
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / ".env.example"
@@ -61,9 +67,18 @@ def read_env() -> str:
 
 
 def write_env(text: str) -> None:
-    """UTF-8 无 BOM 写回；先写临时文件再替换，避免写一半把配置弄坏。"""
+    """UTF-8 无 BOM 写回；先写临时文件再替换，避免写一半把配置弄坏。
+
+    ⚠️ 权限必须显式处理：`Path.replace()` 之后目标文件继承的是**临时文件**的权限，
+    而 `write_bytes` 按 umask 创建（通常 644）。`.env` 里是真实 API key，
+    在多人共用的服务器上 644 意味着任何本地用户都能读走它。所以：
+        已存在 → 原样沿用它的权限（`chmod 600 .env` 之后不会被悄悄改宽）
+        新建   → 直接给 600
+    """
     tmp = ENV_FILE.parent / (ENV_FILE.name + ".tmp")
+    mode = stat.S_IMODE(ENV_FILE.stat().st_mode) if ENV_FILE.exists() else 0o600
     tmp.write_bytes(text.encode("utf-8"))
+    os.chmod(tmp, mode)
     tmp.replace(ENV_FILE)
 
 
@@ -96,7 +111,9 @@ def main() -> int:
 
     if not ENV_FILE.exists():
         ENV_FILE.write_bytes(TEMPLATE.read_bytes())
-        print(f"✓ 已从 {TEMPLATE.name} 生成 {ENV_FILE.name}")
+        # 模板本身可以公开（值全是占位符），但复制出来的 .env 会装真实 key
+        os.chmod(ENV_FILE, 0o600)
+        print(f"✓ 已从 {TEMPLATE.name} 生成 {ENV_FILE.name}（权限 600）")
     else:
         print(f"· {ENV_FILE.name} 已存在，只补齐缺失项（不动已有值）")
 
@@ -104,9 +121,16 @@ def main() -> int:
 
     # ── AUTH_JWT_SECRET：唯一一个"不填就起不来"的变量 ──────────────────
     current = get_val(text, "AUTH_JWT_SECRET")
-    if not current or current == PLACEHOLDER:
+    too_short = bool(current) and len(current.encode("utf-8")) < MIN_SECRET_BYTES
+    if not current or current == PLACEHOLDER or too_short:
         text = upsert(text, "AUTH_JWT_SECRET", secrets.token_urlsafe(48))
-        print("✓ AUTH_JWT_SECRET 已生成新的 64 字符随机密钥并写入")
+        if too_short:
+            print(
+                f"✓ AUTH_JWT_SECRET 原来只有 {len(current.encode('utf-8'))} 字节"
+                f"（不足 {MIN_SECRET_BYTES}），已重新生成为 64 字符随机密钥"
+            )
+        else:
+            print("✓ AUTH_JWT_SECRET 已生成新的 64 字符随机密钥并写入")
     else:
         print(f"· AUTH_JWT_SECRET 已有值（{len(current)} 字符），保持不动")
 
